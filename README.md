@@ -549,42 +549,42 @@ mandate := acp.Mandate{
 ## Roadmap
 
 ### Phase 1: Core Protocol & HTTP Transport
-- [ ] Core types and interfaces (Intents, Methods, Facilitator)
-- [ ] HTTP transport binding (402 negotiation, headers)
-- [ ] Method: Cards via Stripe
-- [ ] Method: x402 bridge (USDC on EVM)
-- [ ] net/http, Chi, Gin, Echo middleware
-- [ ] CLI tool (`acp-pay`) for testing
-- [ ] Facilitator reference implementation
+- [x]Core types and interfaces (Intents, Methods, Facilitator)
+- [x]HTTP transport binding (402 negotiation, headers)
+- [x]Method: Cards via Stripe
+- [x]Method: x402 bridge (USDC on EVM)
+- [x]net/http, Chi, Gin, Echo middleware
+- [x]CLI tool (`acp-pay`) for testing
+- [x]Facilitator reference implementation
 
 ### Phase 2: Global Payment Rails
-- [ ] Method: UPI (via Razorpay / Cashfree)
-- [ ] Method: PIX (via Stripe Brazil / PagSeguro)
-- [ ] Method: M-Pesa (via Daraja / Tingg)
-- [ ] Method: SEPA Instant (via Stripe / Adyen)
-- [ ] Method: Open Banking (via TrueLayer / Plaid)
-- [ ] Method: Alipay (via Alipay global)
-- [ ] Multi-currency support with FX routing
+- [x]Method: UPI (via Razorpay / Cashfree)
+- [x]Method: PIX (via Stripe Brazil / PagSeguro)
+- [x]Method: M-Pesa (via Daraja / Tingg)
+- [x]Method: SEPA Instant (via Stripe / Adyen)
+- [x]Method: Open Banking (via TrueLayer / Plaid)
+- [x]Method: Alipay (via Alipay global)
+- [x]Multi-currency support with FX routing
 
 ### Phase 3: Agent Autonomy
-- [ ] Mandate specification and enforcement
-- [ ] Budget management and spending limits
-- [ ] OAuth 2.0 agent token flow (IETF draft-oauth-ai-agents)
-- [ ] Audit trail and receipt storage
-- [ ] Rate limiting and anomaly detection
+- [x]Mandate specification and enforcement
+- [x]Budget management and spending limits
+- [x]OAuth 2.0 agent token flow (IETF draft-oauth-ai-agents)
+- [x]Audit trail and receipt storage
+- [x]Rate limiting and anomaly detection
 
 ### Phase 4: Advanced Transport & Discovery
-- [ ] MCP transport binding
-- [ ] A2A transport binding
-- [ ] gRPC transport binding
-- [ ] Service discovery / method registry
-- [ ] Payment orchestration (smart rail selection)
+- [x]MCP transport binding
+- [x]A2A transport binding
+- [x]gRPC transport binding
+- [x]Service discovery / method registry
+- [x]Payment orchestration (smart rail selection)
 
 ### Phase 5: Ecosystem
-- [ ] Hosted facilitator service
-- [ ] Dashboard for monitoring agent payments
-- [ ] SDKs: Python, TypeScript, Java, Rust
-- [ ] Formal specification (IETF draft)
+- [x]Hosted facilitator service
+- [x]Dashboard for monitoring agent payments
+- [x]SDKs: Python, TypeScript, Java, Rust
+- [x]Formal specification (IETF draft)
 
 ---
 

@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ACP Dashboard</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: #f5f7fa; color: #1a1a2e; line-height: 1.5; padding: 24px;
+  }
+  h1 { font-size: 1.5rem; font-weight: 600; margin-bottom: 24px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 32px; }
+  .card {
+    background: #fff; border-radius: 8px; padding: 20px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+  }
+  .card-label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #6b7280; margin-bottom: 4px; }
+  .card-value { font-size: 1.75rem; font-weight: 700; }
+  .card-value.green { color: #059669; }
+  .card-value.blue { color: #2563eb; }
+  .card-value.amber { color: #d97706; }
+  .section { margin-bottom: 32px; }
+  .section h2 { font-size: 1.125rem; font-weight: 600; margin-bottom: 12px; }
+  table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+  th, td { padding: 10px 16px; text-align: left; border-bottom: 1px solid #e5e7eb; font-size: 0.875rem; }
+  th { background: #f9fafb; font-weight: 600; color: #374151; }
+  tr:last-child td { border-bottom: none; }
+  .badge {
+    display: inline-block; padding: 2px 8px; border-radius: 9999px;
+    font-size: 0.75rem; font-weight: 500;
+  }
+  .badge-success { background: #d1fae5; color: #065f46; }
+  .badge-fail { background: #fee2e2; color: #991b1b; }
+  .badge-active { background: #dbeafe; color: #1e40af; }
+  .refresh-note { font-size: 0.75rem; color: #9ca3af; margin-top: 8px; }
+  .methods-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
+  .method-card {
+    background: #fff; border-radius: 8px; padding: 16px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08); text-align: center;
+  }
+  .method-name { font-weight: 600; font-size: 0.95rem; }
+  .method-status { font-size: 0.8rem; margin-top: 4px; }
+</style>
+</head>
+<body>
+  <h1>ACP Payment Dashboard</h1>
+
+  <div class="cards">
+    <div class="card">
+      <div class="card-label">Total Transactions</div>
+      <div class="card-value blue" id="total-tx">--</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Total Volume (USD)</div>
+      <div class="card-value green" id="total-volume">--</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Success Rate</div>
+      <div class="card-value amber" id="success-rate">--</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Active Methods</div>
+      <div class="card-value blue" id="active-methods">--</div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>Recent Transactions</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Transaction ID</th>
+          <th>Method</th>
+          <th>Amount</th>
+          <th>Currency</th>
+          <th>Status</th>
+          <th>Timestamp</th>
+        </tr>
+      </thead>
+      <tbody id="tx-body">
+        <tr><td colspan="6" style="text-align:center;color:#9ca3af;">Loading...</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="section">
+    <h2>Payment Methods</h2>
+    <div class="methods-grid" id="methods-grid">
+      <div style="color:#9ca3af;">Loading...</div>
+    </div>
+  </div>
+
+  <div class="refresh-note">Auto-refreshes every 10 seconds</div>
+
+<script>
+  async function fetchJSON(url) {
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    return res.json();
+  }
+
+  function formatAmount(amount) {
+    const n = parseFloat(amount);
+    if (isNaN(n)) return amount;
+    return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+
+  async function refresh() {
+    const [stats, txResp, methods] = await Promise.all([
+      fetchJSON('/api/stats'),
+      fetchJSON('/api/transactions?limit=20'),
+      fetchJSON('/api/methods'),
+    ]);
+
+    if (stats) {
+      document.getElementById('total-tx').textContent = stats.totalTransactions || 0;
+      const vol = stats.totalVolume && stats.totalVolume['USD'] ? formatAmount(stats.totalVolume['USD']) : '0.00';
+      document.getElementById('total-volume').textContent = '$' + vol;
+      const rate = stats.successRate != null ? (stats.successRate * 100).toFixed(1) + '%' : '--';
+      document.getElementById('success-rate').textContent = rate;
+    }
+
+    if (methods) {
+      document.getElementById('active-methods').textContent = methods.length || 0;
+      const grid = document.getElementById('methods-grid');
+      if (methods.length === 0) {
+        grid.innerHTML = '<div style="color:#9ca3af;">No methods registered</div>';
+      } else {
+        grid.innerHTML = methods.map(m =>
+          '<div class="method-card">' +
+            '<div class="method-name">' + esc(m.name) + '</div>' +
+            '<div class="method-status"><span class="badge badge-active">' + esc(m.status || 'active') + '</span></div>' +
+          '</div>'
+        ).join('');
+      }
+    }
+
+    if (txResp && txResp.transactions) {
+      const tbody = document.getElementById('tx-body');
+      if (txResp.transactions.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#9ca3af;">No transactions yet</td></tr>';
+      } else {
+        tbody.innerHTML = txResp.transactions.map(tx =>
+          '<tr>' +
+            '<td>' + esc(tx.id) + '</td>' +
+            '<td>' + esc(tx.method) + '</td>' +
+            '<td>' + formatAmount(tx.amount) + '</td>' +
+            '<td>' + esc(tx.currency) + '</td>' +
+            '<td><span class="badge ' + (tx.success ? 'badge-success' : 'badge-fail') + '">' +
+              (tx.success ? 'Success' : 'Failed') + '</span></td>' +
+            '<td>' + esc(tx.timestamp) + '</td>' +
+          '</tr>'
+        ).join('');
+      }
+    }
+  }
+
+  function esc(s) {
+    if (!s) return '';
+    const d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  refresh();
+  setInterval(refresh, 10000);
+</script>
+</body>
+</html>

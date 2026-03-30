@@ -1,11 +1,9 @@
-// Package mpesa implements M-Pesa payments via the Daraja API.
 package mpesa
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"regexp"
 	"time"
 
@@ -19,16 +17,7 @@ type Config struct {
 	ShortCode      string
 	PassKey        string
 	Environment    string // "sandbox" or "production"
-	// HTTPClient is the HTTP client used for Daraja API calls.
-	// Defaults to http.DefaultClient if nil.
-	HTTPClient *http.Client
-}
-
-func (c *Config) httpClient() *http.Client {
-	if c.HTTPClient != nil {
-		return c.HTTPClient
-	}
-	return http.DefaultClient
+	core.BaseConfig
 }
 
 // baseURL returns the Daraja API base URL for the configured environment.
@@ -85,13 +74,8 @@ func (m *MpesaMethod) SupportedCurrencies() []core.Currency {
 }
 
 func (m *MpesaMethod) BuildOption(intent core.Intent, price core.Price) (core.PaymentOption, error) {
-	if !core.SupportsIntent(m, intent) {
-		return core.PaymentOption{}, core.NewPaymentError(core.ErrUnsupportedIntent,
-			fmt.Sprintf("mpesa does not support intent %q", intent))
-	}
-	if price.Currency != core.KES {
-		return core.PaymentOption{}, core.NewPaymentError(core.ErrCurrencyMismatch,
-			fmt.Sprintf("mpesa only supports KES, got %q", price.Currency))
+	if err := core.ValidateBuildOption("mpesa", intent, price.Currency, m.SupportedIntents(), m.SupportedCurrencies()); err != nil {
+		return core.PaymentOption{}, err
 	}
 	return core.PaymentOption{
 		Intent:      intent,
@@ -103,15 +87,14 @@ func (m *MpesaMethod) BuildOption(intent core.Intent, price core.Price) (core.Pa
 }
 
 func (m *MpesaMethod) CreatePayload(_ context.Context, option core.PaymentOption) (json.RawMessage, error) {
-	// TODO: Call Daraja API to initiate an STK Push request.
-	_ = m.config.httpClient()
+	// TODO: call m.config.BaseConfig.GetHTTPClient().Do(req)
 	_ = m.config.baseURL()
 
 	now := time.Now()
 	p := Payload{
 		PhoneNumber:       "254700000000",
 		AccountRef:        fmt.Sprintf("ACP_%d", now.UnixNano()),
-		TransactionID:     fmt.Sprintf("mpesa_txn_%d", now.UnixNano()),
+		TransactionID:     core.GenerateTxnID("mpesa"),
 		CheckoutRequestID: fmt.Sprintf("ws_CO_%d", now.UnixNano()),
 	}
 	return json.Marshal(p)
@@ -119,8 +102,8 @@ func (m *MpesaMethod) CreatePayload(_ context.Context, option core.PaymentOption
 
 func (m *MpesaMethod) Verify(_ context.Context, payment core.PaymentPayload, option core.PaymentOption) (*core.VerifyResponse, error) {
 	var p Payload
-	if err := json.Unmarshal(payment.Payload, &p); err != nil {
-		return nil, core.NewPaymentError(core.ErrInvalidPayload, "invalid mpesa payload: "+err.Error())
+	if err := core.UnmarshalMethodPayload(payment.Payload, &p, "mpesa"); err != nil {
+		return nil, err
 	}
 	if p.PhoneNumber == "" {
 		return &core.VerifyResponse{Valid: false, Reason: "missing phoneNumber"}, nil
@@ -135,40 +118,30 @@ func (m *MpesaMethod) Verify(_ context.Context, payment core.PaymentPayload, opt
 		return &core.VerifyResponse{Valid: false, Reason: "missing accountRef"}, nil
 	}
 
-	// TODO: Call Daraja API to query STK Push status.
-	_ = m.config.httpClient()
+	// TODO: call m.config.BaseConfig.GetHTTPClient().Do(req)
 
 	return &core.VerifyResponse{Valid: true, Payer: p.PhoneNumber}, nil
 }
 
 func (m *MpesaMethod) Settle(_ context.Context, payment core.PaymentPayload, option core.PaymentOption) (*core.SettleResponse, error) {
 	var p Payload
-	if err := json.Unmarshal(payment.Payload, &p); err != nil {
-		return nil, core.NewPaymentError(core.ErrInvalidPayload, "invalid mpesa payload: "+err.Error())
+	if err := core.UnmarshalMethodPayload(payment.Payload, &p, "mpesa"); err != nil {
+		return nil, err
 	}
 	if p.CheckoutRequestID == "" {
 		return nil, core.NewPaymentError(core.ErrInvalidPayload, "missing checkoutRequestId")
 	}
 
-	// TODO: Call Daraja API to confirm settlement.
-	_ = m.config.httpClient()
+	// TODO: call m.config.BaseConfig.GetHTTPClient().Do(req)
 
-	txnID := fmt.Sprintf("provider_txn_%d", time.Now().UnixNano())
-	now := time.Now()
+	txnID := core.GenerateTxnID("provider")
 
-	receipt, _ := json.Marshal(map[string]string{
+	receipt := map[string]string{
 		"checkoutRequestId": p.CheckoutRequestID,
 		"phoneNumber":       p.PhoneNumber,
 		"accountRef":        p.AccountRef,
 		"shortCode":         m.config.ShortCode,
-	})
+	}
 
-	return &core.SettleResponse{
-		ACPVersion:  core.ACPVersion,
-		Success:     true,
-		Method:      "mpesa",
-		Transaction: txnID,
-		SettledAt:   now.Format(time.RFC3339),
-		Receipt:     receipt,
-	}, nil
+	return core.BuildSettleResponse("mpesa", txnID, receipt)
 }

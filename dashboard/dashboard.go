@@ -1,5 +1,3 @@
-// Package dashboard provides a web-based monitoring dashboard for ACP
-// payment transactions and method status.
 package dashboard
 
 import (
@@ -12,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	acpapi "github.com/paideia-ai/acp/api"
 	"github.com/paideia-ai/acp/core"
 )
 
@@ -197,6 +196,25 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /api/transactions", s.handleTransactions)
 	s.mux.HandleFunc("GET /api/methods", s.handleMethods)
 	s.mux.HandleFunc("GET /api/health", s.handleHealth)
+
+	// API documentation endpoints.
+	swaggerUI, err2 := fs.Sub(acpapi.Docs, "swagger-ui")
+	if err2 != nil {
+		log.Fatalf("dashboard: failed to load swagger-ui: %v", err2)
+	}
+	s.mux.Handle("GET /docs/", http.StripPrefix("/docs/", http.FileServer(http.FS(swaggerUI))))
+	s.mux.HandleFunc("GET /docs", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/docs/", http.StatusMovedPermanently)
+	})
+	s.mux.HandleFunc("GET /openapi.yaml", func(w http.ResponseWriter, r *http.Request) {
+		data, readErr := acpapi.Docs.ReadFile("openapi.yaml")
+		if readErr != nil {
+			http.Error(w, "spec not found", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/yaml; charset=utf-8")
+		w.Write(data)
+	})
 }
 
 // Handler returns the HTTP handler for the dashboard.

@@ -1,11 +1,9 @@
-// Package sepa implements SEPA Instant credit transfer payments.
 package sepa
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"regexp"
 	"time"
 
@@ -18,16 +16,7 @@ type Config struct {
 	IBAN     string
 	BIC      string
 	Provider string // e.g. "stripe", "adyen"
-	// HTTPClient is the HTTP client used for provider API calls.
-	// Defaults to http.DefaultClient if nil.
-	HTTPClient *http.Client
-}
-
-func (c *Config) httpClient() *http.Client {
-	if c.HTTPClient != nil {
-		return c.HTTPClient
-	}
-	return http.DefaultClient
+	core.BaseConfig
 }
 
 // Payload is the SEPA-specific payment payload.
@@ -76,13 +65,8 @@ func (m *SepaMethod) SupportedCurrencies() []core.Currency {
 }
 
 func (m *SepaMethod) BuildOption(intent core.Intent, price core.Price) (core.PaymentOption, error) {
-	if !core.SupportsIntent(m, intent) {
-		return core.PaymentOption{}, core.NewPaymentError(core.ErrUnsupportedIntent,
-			fmt.Sprintf("sepa does not support intent %q", intent))
-	}
-	if price.Currency != core.EUR {
-		return core.PaymentOption{}, core.NewPaymentError(core.ErrCurrencyMismatch,
-			fmt.Sprintf("sepa only supports EUR, got %q", price.Currency))
+	if err := core.ValidateBuildOption("sepa", intent, price.Currency, m.SupportedIntents(), m.SupportedCurrencies()); err != nil {
+		return core.PaymentOption{}, err
 	}
 	return core.PaymentOption{
 		Intent:      intent,
@@ -94,8 +78,7 @@ func (m *SepaMethod) BuildOption(intent core.Intent, price core.Price) (core.Pay
 }
 
 func (m *SepaMethod) CreatePayload(_ context.Context, option core.PaymentOption) (json.RawMessage, error) {
-	// TODO: Call provider API to initiate a SEPA credit transfer.
-	_ = m.config.httpClient()
+	// TODO: call m.config.BaseConfig.GetHTTPClient().Do(req)
 
 	now := time.Now()
 	p := Payload{
@@ -109,8 +92,8 @@ func (m *SepaMethod) CreatePayload(_ context.Context, option core.PaymentOption)
 
 func (m *SepaMethod) Verify(_ context.Context, payment core.PaymentPayload, option core.PaymentOption) (*core.VerifyResponse, error) {
 	var p Payload
-	if err := json.Unmarshal(payment.Payload, &p); err != nil {
-		return nil, core.NewPaymentError(core.ErrInvalidPayload, "invalid sepa payload: "+err.Error())
+	if err := core.UnmarshalMethodPayload(payment.Payload, &p, "sepa"); err != nil {
+		return nil, err
 	}
 	if p.IBAN == "" {
 		return &core.VerifyResponse{Valid: false, Reason: "missing iban"}, nil
@@ -128,41 +111,31 @@ func (m *SepaMethod) Verify(_ context.Context, payment core.PaymentPayload, opti
 		return &core.VerifyResponse{Valid: false, Reason: "missing endToEndId"}, nil
 	}
 
-	// TODO: Call provider API to verify SEPA transfer status.
-	_ = m.config.httpClient()
+	// TODO: call m.config.BaseConfig.GetHTTPClient().Do(req)
 
 	return &core.VerifyResponse{Valid: true, Payer: p.IBAN}, nil
 }
 
 func (m *SepaMethod) Settle(_ context.Context, payment core.PaymentPayload, option core.PaymentOption) (*core.SettleResponse, error) {
 	var p Payload
-	if err := json.Unmarshal(payment.Payload, &p); err != nil {
-		return nil, core.NewPaymentError(core.ErrInvalidPayload, "invalid sepa payload: "+err.Error())
+	if err := core.UnmarshalMethodPayload(payment.Payload, &p, "sepa"); err != nil {
+		return nil, err
 	}
 	if p.EndToEndID == "" {
 		return nil, core.NewPaymentError(core.ErrInvalidPayload, "missing endToEndId")
 	}
 
-	// TODO: Call provider API to confirm SEPA settlement.
-	_ = m.config.httpClient()
+	// TODO: call m.config.BaseConfig.GetHTTPClient().Do(req)
 
-	txnID := fmt.Sprintf("provider_txn_%d", time.Now().UnixNano())
-	now := time.Now()
+	txnID := core.GenerateTxnID("provider")
 
-	receipt, _ := json.Marshal(map[string]string{
+	receipt := map[string]string{
 		"endToEndId": p.EndToEndID,
 		"reference":  p.Reference,
 		"iban":       p.IBAN,
 		"bic":        p.BIC,
 		"provider":   m.config.Provider,
-	})
+	}
 
-	return &core.SettleResponse{
-		ACPVersion:  core.ACPVersion,
-		Success:     true,
-		Method:      "sepa",
-		Transaction: txnID,
-		SettledAt:   now.Format(time.RFC3339),
-		Receipt:     receipt,
-	}, nil
+	return core.BuildSettleResponse("sepa", txnID, receipt)
 }

@@ -1,11 +1,9 @@
-// Package alipay implements Alipay payments.
 package alipay
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"time"
 
 	"github.com/paideia-ai/acp/core"
@@ -17,16 +15,7 @@ type Config struct {
 	PrivateKey      string // RSA2 private key for signing
 	AlipayPublicKey string // Alipay's public key for verification
 	Gateway         string // e.g. "https://openapi.alipay.com/gateway.do"
-	// HTTPClient is the HTTP client used for Alipay API calls.
-	// Defaults to http.DefaultClient if nil.
-	HTTPClient *http.Client
-}
-
-func (c *Config) httpClient() *http.Client {
-	if c.HTTPClient != nil {
-		return c.HTTPClient
-	}
-	return http.DefaultClient
+	core.BaseConfig
 }
 
 // Payload is the Alipay-specific payment payload.
@@ -69,13 +58,8 @@ func (m *AlipayMethod) SupportedCurrencies() []core.Currency {
 }
 
 func (m *AlipayMethod) BuildOption(intent core.Intent, price core.Price) (core.PaymentOption, error) {
-	if !core.SupportsIntent(m, intent) {
-		return core.PaymentOption{}, core.NewPaymentError(core.ErrUnsupportedIntent,
-			fmt.Sprintf("alipay does not support intent %q", intent))
-	}
-	if price.Currency != core.CNY {
-		return core.PaymentOption{}, core.NewPaymentError(core.ErrCurrencyMismatch,
-			fmt.Sprintf("alipay only supports CNY, got %q", price.Currency))
+	if err := core.ValidateBuildOption("alipay", intent, price.Currency, m.SupportedIntents(), m.SupportedCurrencies()); err != nil {
+		return core.PaymentOption{}, err
 	}
 	return core.PaymentOption{
 		Intent:      intent,
@@ -87,8 +71,7 @@ func (m *AlipayMethod) BuildOption(intent core.Intent, price core.Price) (core.P
 }
 
 func (m *AlipayMethod) CreatePayload(_ context.Context, option core.PaymentOption) (json.RawMessage, error) {
-	// TODO: Call Alipay gateway to create a trade and return trade number.
-	_ = m.config.httpClient()
+	// TODO: call m.config.BaseConfig.GetHTTPClient().Do(req)
 
 	now := time.Now()
 	p := Payload{
@@ -101,8 +84,8 @@ func (m *AlipayMethod) CreatePayload(_ context.Context, option core.PaymentOptio
 
 func (m *AlipayMethod) Verify(_ context.Context, payment core.PaymentPayload, option core.PaymentOption) (*core.VerifyResponse, error) {
 	var p Payload
-	if err := json.Unmarshal(payment.Payload, &p); err != nil {
-		return nil, core.NewPaymentError(core.ErrInvalidPayload, "invalid alipay payload: "+err.Error())
+	if err := core.UnmarshalMethodPayload(payment.Payload, &p, "alipay"); err != nil {
+		return nil, err
 	}
 	if p.TradeNo == "" {
 		return &core.VerifyResponse{Valid: false, Reason: "missing tradeNo"}, nil
@@ -114,40 +97,30 @@ func (m *AlipayMethod) Verify(_ context.Context, payment core.PaymentPayload, op
 		return &core.VerifyResponse{Valid: false, Reason: "missing buyerId"}, nil
 	}
 
-	// TODO: Call Alipay gateway to query trade status and verify signature.
-	_ = m.config.httpClient()
+	// TODO: call m.config.BaseConfig.GetHTTPClient().Do(req)
 
 	return &core.VerifyResponse{Valid: true, Payer: p.BuyerID}, nil
 }
 
 func (m *AlipayMethod) Settle(_ context.Context, payment core.PaymentPayload, option core.PaymentOption) (*core.SettleResponse, error) {
 	var p Payload
-	if err := json.Unmarshal(payment.Payload, &p); err != nil {
-		return nil, core.NewPaymentError(core.ErrInvalidPayload, "invalid alipay payload: "+err.Error())
+	if err := core.UnmarshalMethodPayload(payment.Payload, &p, "alipay"); err != nil {
+		return nil, err
 	}
 	if p.TradeNo == "" {
 		return nil, core.NewPaymentError(core.ErrInvalidPayload, "missing tradeNo")
 	}
 
-	// TODO: Call Alipay gateway to settle/close the trade.
-	_ = m.config.httpClient()
+	// TODO: call m.config.BaseConfig.GetHTTPClient().Do(req)
 
-	txnID := fmt.Sprintf("provider_txn_%d", time.Now().UnixNano())
-	now := time.Now()
+	txnID := core.GenerateTxnID("provider")
 
-	receipt, _ := json.Marshal(map[string]string{
+	receipt := map[string]string{
 		"tradeNo":    p.TradeNo,
 		"outTradeNo": p.OutTradeNo,
 		"buyerId":    p.BuyerID,
 		"appId":      m.config.AppID,
-	})
+	}
 
-	return &core.SettleResponse{
-		ACPVersion:  core.ACPVersion,
-		Success:     true,
-		Method:      "alipay",
-		Transaction: txnID,
-		SettledAt:   now.Format(time.RFC3339),
-		Receipt:     receipt,
-	}, nil
+	return core.BuildSettleResponse("alipay", txnID, receipt)
 }

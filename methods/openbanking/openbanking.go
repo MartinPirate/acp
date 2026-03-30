@@ -1,11 +1,9 @@
-// Package openbanking implements Open Banking (PSD2) payments.
 package openbanking
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"time"
 
 	"github.com/paideia-ai/acp/core"
@@ -16,16 +14,7 @@ type Config struct {
 	APIKey      string
 	Provider    string // e.g. "truelayer", "plaid"
 	RedirectURL string
-	// HTTPClient is the HTTP client used for provider API calls.
-	// Defaults to http.DefaultClient if nil.
-	HTTPClient *http.Client
-}
-
-func (c *Config) httpClient() *http.Client {
-	if c.HTTPClient != nil {
-		return c.HTTPClient
-	}
-	return http.DefaultClient
+	core.BaseConfig
 }
 
 // Payload is the Open Banking-specific payment payload.
@@ -65,13 +54,8 @@ func (m *OpenBankingMethod) SupportedCurrencies() []core.Currency {
 }
 
 func (m *OpenBankingMethod) BuildOption(intent core.Intent, price core.Price) (core.PaymentOption, error) {
-	if !core.SupportsIntent(m, intent) {
-		return core.PaymentOption{}, core.NewPaymentError(core.ErrUnsupportedIntent,
-			fmt.Sprintf("openbanking does not support intent %q", intent))
-	}
-	if !core.SupportsCurrency(m, price.Currency) {
-		return core.PaymentOption{}, core.NewPaymentError(core.ErrCurrencyMismatch,
-			fmt.Sprintf("openbanking does not support currency %q", price.Currency))
+	if err := core.ValidateBuildOption("openbanking", intent, price.Currency, m.SupportedIntents(), m.SupportedCurrencies()); err != nil {
+		return core.PaymentOption{}, err
 	}
 
 	extra, _ := json.Marshal(map[string]string{
@@ -90,8 +74,7 @@ func (m *OpenBankingMethod) BuildOption(intent core.Intent, price core.Price) (c
 }
 
 func (m *OpenBankingMethod) CreatePayload(_ context.Context, option core.PaymentOption) (json.RawMessage, error) {
-	// TODO: Call provider API to create a payment initiation request.
-	_ = m.config.httpClient()
+	// TODO: call m.config.BaseConfig.GetHTTPClient().Do(req)
 
 	now := time.Now()
 	p := Payload{
@@ -104,8 +87,8 @@ func (m *OpenBankingMethod) CreatePayload(_ context.Context, option core.Payment
 
 func (m *OpenBankingMethod) Verify(_ context.Context, payment core.PaymentPayload, option core.PaymentOption) (*core.VerifyResponse, error) {
 	var p Payload
-	if err := json.Unmarshal(payment.Payload, &p); err != nil {
-		return nil, core.NewPaymentError(core.ErrInvalidPayload, "invalid openbanking payload: "+err.Error())
+	if err := core.UnmarshalMethodPayload(payment.Payload, &p, "openbanking"); err != nil {
+		return nil, err
 	}
 	if p.ConsentID == "" {
 		return &core.VerifyResponse{Valid: false, Reason: "missing consentId"}, nil
@@ -117,39 +100,29 @@ func (m *OpenBankingMethod) Verify(_ context.Context, payment core.PaymentPayloa
 		return &core.VerifyResponse{Valid: false, Reason: "missing provider"}, nil
 	}
 
-	// TODO: Call provider API to verify payment initiation status and consent.
-	_ = m.config.httpClient()
+	// TODO: call m.config.BaseConfig.GetHTTPClient().Do(req)
 
 	return &core.VerifyResponse{Valid: true, Payer: "ob-payer"}, nil
 }
 
 func (m *OpenBankingMethod) Settle(_ context.Context, payment core.PaymentPayload, option core.PaymentOption) (*core.SettleResponse, error) {
 	var p Payload
-	if err := json.Unmarshal(payment.Payload, &p); err != nil {
-		return nil, core.NewPaymentError(core.ErrInvalidPayload, "invalid openbanking payload: "+err.Error())
+	if err := core.UnmarshalMethodPayload(payment.Payload, &p, "openbanking"); err != nil {
+		return nil, err
 	}
 	if p.PaymentID == "" {
 		return nil, core.NewPaymentError(core.ErrInvalidPayload, "missing paymentId")
 	}
 
-	// TODO: Call provider API to execute the payment.
-	_ = m.config.httpClient()
+	// TODO: call m.config.BaseConfig.GetHTTPClient().Do(req)
 
-	txnID := fmt.Sprintf("provider_txn_%d", time.Now().UnixNano())
-	now := time.Now()
+	txnID := core.GenerateTxnID("provider")
 
-	receipt, _ := json.Marshal(map[string]string{
+	receipt := map[string]string{
 		"consentId": p.ConsentID,
 		"paymentId": p.PaymentID,
 		"provider":  p.Provider,
-	})
+	}
 
-	return &core.SettleResponse{
-		ACPVersion:  core.ACPVersion,
-		Success:     true,
-		Method:      "openbanking",
-		Transaction: txnID,
-		SettledAt:   now.Format(time.RFC3339),
-		Receipt:     receipt,
-	}, nil
+	return core.BuildSettleResponse("openbanking", txnID, receipt)
 }

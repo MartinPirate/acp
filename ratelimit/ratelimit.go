@@ -1,4 +1,3 @@
-// Package ratelimit provides rate limiting and anomaly detection for ACP payments.
 package ratelimit
 
 import (

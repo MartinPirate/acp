@@ -1,11 +1,9 @@
-// Package card implements card payments via Stripe's PaymentIntent API.
 package card
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"strings"
 	"time"
 
@@ -16,16 +14,7 @@ import (
 type Config struct {
 	APIKey        string
 	WebhookSecret string
-	// HTTPClient is the HTTP client used for Stripe API calls.
-	// Defaults to http.DefaultClient if nil.
-	HTTPClient *http.Client
-}
-
-func (c *Config) httpClient() *http.Client {
-	if c.HTTPClient != nil {
-		return c.HTTPClient
-	}
-	return http.DefaultClient
+	core.BaseConfig
 }
 
 // Payload is the card-specific payment payload.
@@ -65,13 +54,8 @@ func (m *CardMethod) SupportedCurrencies() []core.Currency {
 }
 
 func (m *CardMethod) BuildOption(intent core.Intent, price core.Price) (core.PaymentOption, error) {
-	if !core.SupportsIntent(m, intent) {
-		return core.PaymentOption{}, core.NewPaymentError(core.ErrUnsupportedIntent,
-			fmt.Sprintf("card does not support intent %q", intent))
-	}
-	if !core.SupportsCurrency(m, price.Currency) {
-		return core.PaymentOption{}, core.NewPaymentError(core.ErrCurrencyMismatch,
-			fmt.Sprintf("card does not support currency %q", price.Currency))
+	if err := core.ValidateBuildOption("card", intent, price.Currency, m.SupportedIntents(), m.SupportedCurrencies()); err != nil {
+		return core.PaymentOption{}, err
 	}
 	return core.PaymentOption{
 		Intent:      intent,
@@ -83,8 +67,7 @@ func (m *CardMethod) BuildOption(intent core.Intent, price core.Price) (core.Pay
 }
 
 func (m *CardMethod) CreatePayload(_ context.Context, option core.PaymentOption) (json.RawMessage, error) {
-	// TODO: Call Stripe API to create a PaymentIntent and return the client secret.
-	_ = m.config.httpClient()
+	// TODO: call m.config.BaseConfig.GetHTTPClient().Do(req)
 
 	p := Payload{
 		Token:           fmt.Sprintf("tok_%d", time.Now().UnixNano()),
@@ -95,8 +78,8 @@ func (m *CardMethod) CreatePayload(_ context.Context, option core.PaymentOption)
 
 func (m *CardMethod) Verify(_ context.Context, payment core.PaymentPayload, option core.PaymentOption) (*core.VerifyResponse, error) {
 	var p Payload
-	if err := json.Unmarshal(payment.Payload, &p); err != nil {
-		return nil, core.NewPaymentError(core.ErrInvalidPayload, "invalid card payload: "+err.Error())
+	if err := core.UnmarshalMethodPayload(payment.Payload, &p, "card"); err != nil {
+		return nil, err
 	}
 	if p.Token == "" {
 		return &core.VerifyResponse{Valid: false, Reason: "missing token"}, nil
@@ -111,38 +94,29 @@ func (m *CardMethod) Verify(_ context.Context, payment core.PaymentPayload, opti
 		return &core.VerifyResponse{Valid: false, Reason: "invalid token format"}, nil
 	}
 
-	// TODO: Call Stripe API to retrieve the PaymentIntent and verify its status.
-	_ = m.config.httpClient()
+	// TODO: call m.config.BaseConfig.GetHTTPClient().Do(req)
 
 	return &core.VerifyResponse{Valid: true, Payer: "card-holder"}, nil
 }
 
 func (m *CardMethod) Settle(_ context.Context, payment core.PaymentPayload, option core.PaymentOption) (*core.SettleResponse, error) {
 	var p Payload
-	if err := json.Unmarshal(payment.Payload, &p); err != nil {
-		return nil, core.NewPaymentError(core.ErrInvalidPayload, "invalid card payload: "+err.Error())
+	if err := core.UnmarshalMethodPayload(payment.Payload, &p, "card"); err != nil {
+		return nil, err
 	}
 	if p.PaymentIntentID == "" {
 		return nil, core.NewPaymentError(core.ErrInvalidPayload, "missing paymentIntentId")
 	}
 
-	// TODO: Call Stripe API to confirm/capture the PaymentIntent.
-	_ = m.config.httpClient()
+	// TODO: call m.config.BaseConfig.GetHTTPClient().Do(req)
 
-	txnID := fmt.Sprintf("stripe_txn_%d", time.Now().UnixNano())
+	txnID := core.GenerateTxnID("stripe")
 	now := time.Now()
 
-	receipt, _ := json.Marshal(map[string]string{
+	receipt := map[string]string{
 		"paymentIntentId": p.PaymentIntentID,
 		"stripeChargeId":  fmt.Sprintf("ch_%d", now.UnixNano()),
-	})
+	}
 
-	return &core.SettleResponse{
-		ACPVersion:  core.ACPVersion,
-		Success:     true,
-		Method:      "card",
-		Transaction: txnID,
-		SettledAt:   now.Format(time.RFC3339),
-		Receipt:     receipt,
-	}, nil
+	return core.BuildSettleResponse("card", txnID, receipt)
 }

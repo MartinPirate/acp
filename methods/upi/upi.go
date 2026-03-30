@@ -1,11 +1,9 @@
-// Package upi implements UPI payments via Razorpay.
 package upi
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"strings"
 	"time"
 
@@ -17,16 +15,7 @@ type Config struct {
 	APIKey      string
 	APISecret   string
 	MerchantVPA string // e.g. "merchant@upi"
-	// HTTPClient is the HTTP client used for Razorpay API calls.
-	// Defaults to http.DefaultClient if nil.
-	HTTPClient *http.Client
-}
-
-func (c *Config) httpClient() *http.Client {
-	if c.HTTPClient != nil {
-		return c.HTTPClient
-	}
-	return http.DefaultClient
+	core.BaseConfig
 }
 
 // Payload is the UPI-specific payment payload.
@@ -69,13 +58,8 @@ func (m *UPIMethod) SupportedCurrencies() []core.Currency {
 }
 
 func (m *UPIMethod) BuildOption(intent core.Intent, price core.Price) (core.PaymentOption, error) {
-	if !core.SupportsIntent(m, intent) {
-		return core.PaymentOption{}, core.NewPaymentError(core.ErrUnsupportedIntent,
-			fmt.Sprintf("upi does not support intent %q", intent))
-	}
-	if price.Currency != core.INR {
-		return core.PaymentOption{}, core.NewPaymentError(core.ErrCurrencyMismatch,
-			fmt.Sprintf("upi only supports INR, got %q", price.Currency))
+	if err := core.ValidateBuildOption("upi", intent, price.Currency, m.SupportedIntents(), m.SupportedCurrencies()); err != nil {
+		return core.PaymentOption{}, err
 	}
 	return core.PaymentOption{
 		Intent:      intent,
@@ -87,8 +71,7 @@ func (m *UPIMethod) BuildOption(intent core.Intent, price core.Price) (core.Paym
 }
 
 func (m *UPIMethod) CreatePayload(_ context.Context, option core.PaymentOption) (json.RawMessage, error) {
-	// TODO: Call Razorpay API to create a UPI payment request.
-	_ = m.config.httpClient()
+	// TODO: call m.config.BaseConfig.GetHTTPClient().Do(req)
 
 	p := Payload{
 		VPA:              m.config.MerchantVPA,
@@ -100,8 +83,8 @@ func (m *UPIMethod) CreatePayload(_ context.Context, option core.PaymentOption) 
 
 func (m *UPIMethod) Verify(_ context.Context, payment core.PaymentPayload, option core.PaymentOption) (*core.VerifyResponse, error) {
 	var p Payload
-	if err := json.Unmarshal(payment.Payload, &p); err != nil {
-		return nil, core.NewPaymentError(core.ErrInvalidPayload, "invalid upi payload: "+err.Error())
+	if err := core.UnmarshalMethodPayload(payment.Payload, &p, "upi"); err != nil {
+		return nil, err
 	}
 	if p.VPA == "" {
 		return &core.VerifyResponse{Valid: false, Reason: "missing vpa"}, nil
@@ -116,39 +99,29 @@ func (m *UPIMethod) Verify(_ context.Context, payment core.PaymentPayload, optio
 		return &core.VerifyResponse{Valid: false, Reason: "missing upiTransactionId"}, nil
 	}
 
-	// TODO: Call Razorpay API to verify the UPI transaction status.
-	_ = m.config.httpClient()
+	// TODO: call m.config.BaseConfig.GetHTTPClient().Do(req)
 
 	return &core.VerifyResponse{Valid: true, Payer: p.VPA}, nil
 }
 
 func (m *UPIMethod) Settle(_ context.Context, payment core.PaymentPayload, option core.PaymentOption) (*core.SettleResponse, error) {
 	var p Payload
-	if err := json.Unmarshal(payment.Payload, &p); err != nil {
-		return nil, core.NewPaymentError(core.ErrInvalidPayload, "invalid upi payload: "+err.Error())
+	if err := core.UnmarshalMethodPayload(payment.Payload, &p, "upi"); err != nil {
+		return nil, err
 	}
 	if p.UPITransactionID == "" {
 		return nil, core.NewPaymentError(core.ErrInvalidPayload, "missing upiTransactionId")
 	}
 
-	// TODO: Call Razorpay API to capture/settle the UPI payment.
-	_ = m.config.httpClient()
+	// TODO: call m.config.BaseConfig.GetHTTPClient().Do(req)
 
-	txnID := fmt.Sprintf("razorpay_txn_%d", time.Now().UnixNano())
-	now := time.Now()
+	txnID := core.GenerateTxnID("razorpay")
 
-	receipt, _ := json.Marshal(map[string]string{
+	receipt := map[string]string{
 		"upiTransactionId": p.UPITransactionID,
 		"transactionRef":   p.TransactionRef,
 		"vpa":              p.VPA,
-	})
+	}
 
-	return &core.SettleResponse{
-		ACPVersion:  core.ACPVersion,
-		Success:     true,
-		Method:      "upi",
-		Transaction: txnID,
-		SettledAt:   now.Format(time.RFC3339),
-		Receipt:     receipt,
-	}, nil
+	return core.BuildSettleResponse("upi", txnID, receipt)
 }

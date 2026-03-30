@@ -1,6 +1,3 @@
-// Package orchestration provides smart payment rail selection strategies
-// for choosing the optimal payment method based on cost, speed, region,
-// and other configurable criteria.
 package orchestration
 
 import (

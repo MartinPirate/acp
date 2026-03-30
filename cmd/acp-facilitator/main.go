@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io/fs"
 	"log"
 	"net/http"
 
 	"github.com/paideia-ai/acp"
+	acpapi "github.com/paideia-ai/acp/api"
 	"github.com/paideia-ai/acp/core"
 	"github.com/paideia-ai/acp/methods/mock"
 )
@@ -29,6 +31,25 @@ func main() {
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintln(w, `{"status":"ok"}`)
+	})
+
+	// API documentation endpoints.
+	swaggerUI, err := fs.Sub(acpapi.Docs, "swagger-ui")
+	if err != nil {
+		log.Fatalf("failed to load swagger-ui: %v", err)
+	}
+	mux.Handle("GET /api/docs/", http.StripPrefix("/api/docs/", http.FileServer(http.FS(swaggerUI))))
+	mux.HandleFunc("GET /api/docs", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/api/docs/", http.StatusMovedPermanently)
+	})
+	mux.HandleFunc("GET /api/openapi.yaml", func(w http.ResponseWriter, r *http.Request) {
+		data, err := acpapi.Docs.ReadFile("openapi.yaml")
+		if err != nil {
+			http.Error(w, "spec not found", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/yaml; charset=utf-8")
+		w.Write(data)
 	})
 
 	log.Printf("acp-facilitator listening on %s", *addr)

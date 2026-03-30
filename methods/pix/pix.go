@@ -1,11 +1,9 @@
-// Package pix implements PIX payments for Brazil.
 package pix
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"time"
 
 	"github.com/paideia-ai/acp/core"
@@ -16,16 +14,7 @@ type Config struct {
 	APIKey   string
 	PixKey   string // CPF/CNPJ, email, phone, or random key
 	Provider string // e.g. "stripe", "pagseguro"
-	// HTTPClient is the HTTP client used for provider API calls.
-	// Defaults to http.DefaultClient if nil.
-	HTTPClient *http.Client
-}
-
-func (c *Config) httpClient() *http.Client {
-	if c.HTTPClient != nil {
-		return c.HTTPClient
-	}
-	return http.DefaultClient
+	core.BaseConfig
 }
 
 // Payload is the PIX-specific payment payload.
@@ -65,13 +54,8 @@ func (m *PixMethod) SupportedCurrencies() []core.Currency {
 }
 
 func (m *PixMethod) BuildOption(intent core.Intent, price core.Price) (core.PaymentOption, error) {
-	if !core.SupportsIntent(m, intent) {
-		return core.PaymentOption{}, core.NewPaymentError(core.ErrUnsupportedIntent,
-			fmt.Sprintf("pix does not support intent %q", intent))
-	}
-	if price.Currency != core.BRL {
-		return core.PaymentOption{}, core.NewPaymentError(core.ErrCurrencyMismatch,
-			fmt.Sprintf("pix only supports BRL, got %q", price.Currency))
+	if err := core.ValidateBuildOption("pix", intent, price.Currency, m.SupportedIntents(), m.SupportedCurrencies()); err != nil {
+		return core.PaymentOption{}, err
 	}
 	return core.PaymentOption{
 		Intent:      intent,
@@ -83,8 +67,7 @@ func (m *PixMethod) BuildOption(intent core.Intent, price core.Price) (core.Paym
 }
 
 func (m *PixMethod) CreatePayload(_ context.Context, option core.PaymentOption) (json.RawMessage, error) {
-	// TODO: Call provider API to generate PIX QR code and payment reference.
-	_ = m.config.httpClient()
+	// TODO: call m.config.BaseConfig.GetHTTPClient().Do(req)
 
 	now := time.Now()
 	p := Payload{
@@ -97,8 +80,8 @@ func (m *PixMethod) CreatePayload(_ context.Context, option core.PaymentOption) 
 
 func (m *PixMethod) Verify(_ context.Context, payment core.PaymentPayload, option core.PaymentOption) (*core.VerifyResponse, error) {
 	var p Payload
-	if err := json.Unmarshal(payment.Payload, &p); err != nil {
-		return nil, core.NewPaymentError(core.ErrInvalidPayload, "invalid pix payload: "+err.Error())
+	if err := core.UnmarshalMethodPayload(payment.Payload, &p, "pix"); err != nil {
+		return nil, err
 	}
 	if p.PixKey == "" {
 		return &core.VerifyResponse{Valid: false, Reason: "missing pixKey"}, nil
@@ -110,40 +93,30 @@ func (m *PixMethod) Verify(_ context.Context, payment core.PaymentPayload, optio
 		return &core.VerifyResponse{Valid: false, Reason: "missing txId"}, nil
 	}
 
-	// TODO: Call provider API to verify the PIX transaction status.
-	_ = m.config.httpClient()
+	// TODO: call m.config.BaseConfig.GetHTTPClient().Do(req)
 
 	return &core.VerifyResponse{Valid: true, Payer: "pix-payer"}, nil
 }
 
 func (m *PixMethod) Settle(_ context.Context, payment core.PaymentPayload, option core.PaymentOption) (*core.SettleResponse, error) {
 	var p Payload
-	if err := json.Unmarshal(payment.Payload, &p); err != nil {
-		return nil, core.NewPaymentError(core.ErrInvalidPayload, "invalid pix payload: "+err.Error())
+	if err := core.UnmarshalMethodPayload(payment.Payload, &p, "pix"); err != nil {
+		return nil, err
 	}
 	if p.TxID == "" {
 		return nil, core.NewPaymentError(core.ErrInvalidPayload, "missing txId")
 	}
 
-	// TODO: Call provider API to confirm/settle the PIX payment.
-	_ = m.config.httpClient()
+	// TODO: call m.config.BaseConfig.GetHTTPClient().Do(req)
 
-	txnID := fmt.Sprintf("provider_txn_%d", time.Now().UnixNano())
-	now := time.Now()
+	txnID := core.GenerateTxnID("provider")
 
-	receipt, _ := json.Marshal(map[string]string{
+	receipt := map[string]string{
 		"e2eId":    p.E2eID,
 		"txId":     p.TxID,
 		"pixKey":   p.PixKey,
 		"provider": m.config.Provider,
-	})
+	}
 
-	return &core.SettleResponse{
-		ACPVersion:  core.ACPVersion,
-		Success:     true,
-		Method:      "pix",
-		Transaction: txnID,
-		SettledAt:   now.Format(time.RFC3339),
-		Receipt:     receipt,
-	}, nil
+	return core.BuildSettleResponse("pix", txnID, receipt)
 }

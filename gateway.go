@@ -1,5 +1,3 @@
-// Package acp implements the Agentic Commerce Protocol — a universal middleware
-// that enables AI agents to request and make payments through any payment provider.
 package acp
 
 import (

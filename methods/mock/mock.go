@@ -1,4 +1,3 @@
-// Package mock provides a mock payment method for testing ACP integrations.
 package mock
 
 import (
@@ -61,9 +60,8 @@ func (m *MockMethod) SupportedCurrencies() []core.Currency {
 }
 
 func (m *MockMethod) BuildOption(intent core.Intent, price core.Price) (core.PaymentOption, error) {
-	if !core.SupportsIntent(m, intent) {
-		return core.PaymentOption{}, core.NewPaymentError(core.ErrUnsupportedIntent,
-			fmt.Sprintf("mock does not support intent %q", intent))
+	if err := core.ValidateBuildOption("mock", intent, price.Currency, m.SupportedIntents(), m.SupportedCurrencies()); err != nil {
+		return core.PaymentOption{}, err
 	}
 	return core.PaymentOption{
 		Intent:      intent,
@@ -85,8 +83,8 @@ func (m *MockMethod) Verify(_ context.Context, payload core.PaymentPayload, _ co
 	}
 
 	var p mockPayload
-	if err := json.Unmarshal(payload.Payload, &p); err != nil {
-		return nil, core.NewPaymentError(core.ErrInvalidPayload, "invalid mock payload: "+err.Error())
+	if err := core.UnmarshalMethodPayload(payload.Payload, &p, "mock"); err != nil {
+		return nil, err
 	}
 	if p.Token == "" {
 		return &core.VerifyResponse{Valid: false, Reason: "empty token"}, nil
@@ -109,7 +107,7 @@ func (m *MockMethod) Settle(ctx context.Context, payload core.PaymentPayload, op
 	}
 
 	txn := Transaction{
-		ID:        fmt.Sprintf("mock_txn_%d", time.Now().UnixNano()),
+		ID:        core.GenerateTxnID("mock"),
 		Amount:    option.Amount,
 		Currency:  option.Currency,
 		SettledAt: time.Now(),
@@ -120,16 +118,7 @@ func (m *MockMethod) Settle(ctx context.Context, payload core.PaymentPayload, op
 	m.transactions = append(m.transactions, txn)
 	m.mu.Unlock()
 
-	receipt, _ := json.Marshal(txn)
-
-	return &core.SettleResponse{
-		ACPVersion:  core.ACPVersion,
-		Success:     true,
-		Method:      "mock",
-		Transaction: txn.ID,
-		SettledAt:   txn.SettledAt.Format(time.RFC3339),
-		Receipt:     receipt,
-	}, nil
+	return core.BuildSettleResponse("mock", txn.ID, txn)
 }
 
 // Transactions returns all recorded transactions (for test assertions).

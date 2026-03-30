@@ -1,4 +1,3 @@
-// Package audit provides payment audit trail logging and receipt storage.
 package audit
 
 import (

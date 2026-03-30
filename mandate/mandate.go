@@ -1,6 +1,3 @@
-// Package mandate provides pre-authorized spending authority for agents.
-// A mandate defines what an agent is allowed to spend, on which methods,
-// for which intents, and against which resource scopes.
 package mandate
 
 import (

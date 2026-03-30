@@ -1,5 +1,3 @@
-// Package fx provides multi-currency FX rate lookups and amount conversion.
-// It is a utility package, not a Method implementation.
 package fx
 
 import (

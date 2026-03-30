@@ -1,5 +1,3 @@
-// Package discovery provides service discovery and health checking for ACP
-// payment methods and facilitators.
 package discovery
 
 import (

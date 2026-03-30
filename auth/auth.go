@@ -1,5 +1,3 @@
-// Package auth provides OAuth 2.0 agent token issuance and validation
-// based on the IETF draft-oauth-ai-agents-on-behalf-of-user pattern.
 package auth
 
 import (

@@ -1,0 +1,990 @@
+openapi: 3.1.0
+info:
+  title: ACP — Agentic Commerce Protocol
+  version: "1.0.0"
+  description: |
+    The Agentic Commerce Protocol (ACP) enables AI agents to discover, negotiate,
+    and complete payments across any payment rail. This specification covers the
+    Facilitator API, the 402 Payment Flow for resource servers, the Dashboard API,
+    and the Service Discovery API.
+
+    ## Protocol Flow
+
+    1. Agent requests a protected resource.
+    2. Server responds with **402 Payment Required** and an `ACP-Payment-Required` header
+       (base64-encoded JSON of `PaymentRequired`).
+    3. Agent selects a payment option, builds a payload, and retries with an
+       `ACP-Payment` header (base64-encoded JSON of `PaymentPayload`).
+    4. Server verifies and settles via the Gateway (or a remote Facilitator).
+    5. Server returns the resource with an `ACP-Payment-Response` header
+       (base64-encoded JSON of `SettleResponse`).
+  contact:
+    name: Paideia AI
+    url: https://github.com/paideia-ai/acp
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: http://localhost:8181
+    description: Facilitator server (default)
+  - url: http://localhost:8080
+    description: Resource / demo server
+  - url: http://localhost:9090
+    description: Dashboard server
+
+tags:
+  - name: Facilitator
+    description: Remote payment verification and settlement
+  - name: Payment Flow
+    description: The HTTP 402 payment negotiation protocol
+  - name: Dashboard
+    description: Transaction monitoring and statistics
+  - name: Discovery
+    description: Service discovery for payment methods and facilitators
+
+paths:
+  # ── Facilitator API ──────────────────────────────────────────
+  /verify:
+    post:
+      tags: [Facilitator]
+      summary: Verify a payment payload
+      description: |
+        Validates a payment payload against the selected payment method without
+        settling. Returns whether the payment credentials are valid.
+      operationId: verifyPayment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FacilitatorRequest"
+            example:
+              payload:
+                acpVersion: 1
+                resource:
+                  url: /api/data
+                  description: Premium data endpoint
+                  mimeType: application/json
+                accepted:
+                  intent: charge
+                  method: mock
+                  currency: USD
+                  amount: "1.00"
+                  description: Mock payment
+                payload:
+                  token: mock_tok_demo123
+              requirements:
+                acpVersion: 1
+                resource:
+                  url: /api/data
+                  description: /api/data
+                accepts:
+                  - intent: charge
+                    method: mock
+                    currency: USD
+                    amount: "1.00"
+      responses:
+        "200":
+          description: Verification result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifyResponse"
+              examples:
+                valid:
+                  summary: Valid payment
+                  value:
+                    valid: true
+                    payer: mock-payer
+                invalid:
+                  summary: Invalid payment
+                  value:
+                    valid: false
+                    reason: missing token
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /settle:
+    post:
+      tags: [Facilitator]
+      summary: Settle a payment
+      description: |
+        Executes the payment on the underlying rail and returns a settlement
+        receipt. Should only be called after a successful verify.
+      operationId: settlePayment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FacilitatorRequest"
+            example:
+              payload:
+                acpVersion: 1
+                resource:
+                  url: /api/data
+                  description: Premium data endpoint
+                accepted:
+                  intent: charge
+                  method: mock
+                  currency: USD
+                  amount: "1.00"
+                payload:
+                  token: mock_tok_demo123
+              requirements:
+                acpVersion: 1
+                resource:
+                  url: /api/data
+                accepts:
+                  - intent: charge
+                    method: mock
+                    currency: USD
+                    amount: "1.00"
+      responses:
+        "200":
+          description: Settlement receipt
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SettleResponse"
+              example:
+                acpVersion: 1
+                success: true
+                method: mock
+                transaction: mock_txn_1234567890
+                settledAt: "2026-03-27T12:00:00Z"
+                receipt:
+                  mockReceiptId: rcpt_1234567890
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /supported:
+    get:
+      tags: [Facilitator]
+      summary: List supported methods, intents, and currencies
+      description: |
+        Returns all payment methods registered with the facilitator, along with
+        the intents and currencies they collectively support.
+      operationId: getSupported
+      responses:
+        "200":
+          description: Supported capabilities
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportedResponse"
+              example:
+                methods:
+                  - mock
+                  - card
+                intents:
+                  - charge
+                  - authorize
+                currencies:
+                  - USD
+                  - EUR
+                  - GBP
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /health:
+    get:
+      tags: [Facilitator]
+      summary: Health check
+      description: Returns the operational status of the facilitator server.
+      operationId: facilitatorHealth
+      responses:
+        "200":
+          description: Server is healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+              example:
+                status: ok
+
+  # ── Payment Flow (402 Protocol) ──────────────────────────────
+  /api/data:
+    get:
+      tags: [Payment Flow]
+      summary: Access a paid resource (example)
+      description: |
+        Demonstrates the ACP 402 payment flow. When called without an
+        `ACP-Payment` header, returns 402 with payment requirements. When
+        called with a valid payment header, verifies, settles, and returns
+        the resource with a settlement receipt in `ACP-Payment-Response`.
+
+        ### Header Encoding
+
+        All ACP headers use **base64-encoded JSON**:
+        - `ACP-Payment-Required`: base64(JSON of PaymentRequired)
+        - `ACP-Payment`: base64(JSON of PaymentPayload)
+        - `ACP-Payment-Response`: base64(JSON of SettleResponse)
+      operationId: getProtectedResource
+      parameters:
+        - name: ACP-Payment
+          in: header
+          required: false
+          description: |
+            Base64-encoded JSON of a PaymentPayload. Omit to receive 402
+            with payment requirements.
+          schema:
+            type: string
+            format: byte
+      responses:
+        "200":
+          description: Resource delivered after successful payment
+          headers:
+            ACP-Payment-Response:
+              description: Base64-encoded JSON of SettleResponse (settlement receipt)
+              schema:
+                type: string
+                format: byte
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  items:
+                    type: array
+                    items:
+                      type: string
+                  ts:
+                    type: string
+                    format: date-time
+              example:
+                message: "Payment successful! Here's your premium data."
+                items: ["alpha", "bravo", "charlie", "delta"]
+                ts: "2026-03-27T12:00:00Z"
+        "400":
+          description: Malformed ACP-Payment header
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: invalid_payload
+                message: "invalid ACP-Payment header: illegal base64 data"
+        "402":
+          description: Payment required
+          headers:
+            ACP-Payment-Required:
+              description: Base64-encoded JSON of PaymentRequired
+              schema:
+                type: string
+                format: byte
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaymentRequired"
+              example:
+                acpVersion: 1
+                resource:
+                  url: /api/data
+                  description: /api/data
+                  mimeType: application/json
+                accepts:
+                  - intent: charge
+                    method: mock
+                    currency: USD
+                    amount: "1.00"
+                    description: Mock payment
+        "429":
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                code: timeout
+                message: rate limit exceeded
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ── Dashboard API ────────────────────────────────────────────
+  /api/stats:
+    get:
+      tags: [Dashboard]
+      summary: Aggregate statistics
+      description: Returns aggregate transaction statistics including totals, volumes, and success rates.
+      operationId: getDashboardStats
+      responses:
+        "200":
+          description: Aggregate statistics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Stats"
+              example:
+                totalTransactions: 42
+                totalVolume:
+                  USD: "150.00"
+                  EUR: "75.00"
+                byMethod:
+                  mock:
+                    count: 30
+                    volume: "120.00"
+                    successRate: 0.95
+                  card:
+                    count: 12
+                    volume: "105.00"
+                    successRate: 0.92
+                successRate: 0.94
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/transactions:
+    get:
+      tags: [Dashboard]
+      summary: Transaction list
+      description: |
+        Returns recent transactions in reverse chronological order.
+        The `limit` parameter controls how many transactions to return (max 1000).
+      operationId: getDashboardTransactions
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of transactions to return (default 50, max 1000)
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 50
+      responses:
+        "200":
+          description: Transaction list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  transactions:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Transaction"
+                  count:
+                    type: integer
+                    description: Number of transactions returned
+              example:
+                transactions:
+                  - id: txn_1711540800000000000
+                    method: mock
+                    amount: "1.00"
+                    currency: USD
+                    success: true
+                    timestamp: "2026-03-27T12:00:00Z"
+                  - id: txn_1711540790000000000
+                    method: card
+                    amount: "9.99"
+                    currency: USD
+                    success: true
+                    timestamp: "2026-03-27T11:59:50Z"
+                count: 2
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/methods:
+    get:
+      tags: [Dashboard]
+      summary: Registered payment methods
+      description: Returns the list of payment methods known to the dashboard and their status.
+      operationId: getDashboardMethods
+      responses:
+        "200":
+          description: Method list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/MethodInfo"
+              example:
+                - name: mock
+                  status: active
+                - name: card
+                  status: active
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/health:
+    get:
+      tags: [Dashboard]
+      summary: Dashboard health check
+      description: Returns the operational status of the dashboard server.
+      operationId: dashboardHealth
+      responses:
+        "200":
+          description: Dashboard is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  timestamp:
+                    type: string
+                    format: date-time
+              example:
+                status: ok
+                timestamp: "2026-03-27T12:00:00Z"
+
+  # ── Discovery API ────────────────────────────────────────────
+  /.well-known/acp-services:
+    get:
+      tags: [Discovery]
+      summary: Discover active ACP services
+      description: |
+        Returns all registered services with status "active". This is the
+        standard well-known endpoint for ACP service discovery, allowing agents
+        to find available payment facilitators and methods.
+      operationId: discoverServices
+      responses:
+        "200":
+          description: List of active services
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ServiceEntry"
+              example:
+                - id: demo-server
+                  name: ACP Demo Server
+                  type: method
+                  url: http://localhost:8080
+                  methods:
+                    - mock
+                  intents:
+                    - charge
+                  currencies:
+                    - USD
+                    - EUR
+                  regions:
+                    - US
+                    - EU
+                    - KE
+                  healthURL: http://localhost:8080/api/health
+                  status: active
+                  lastChecked: "2026-03-27T12:00:00Z"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+components:
+  schemas:
+    # ── Core Protocol Types ────────────────────────────────────
+    Resource:
+      type: object
+      description: Identifies the resource being paid for.
+      required:
+        - url
+      properties:
+        url:
+          type: string
+          description: URL of the resource
+          example: /api/data
+        description:
+          type: string
+          description: Human-readable description
+          example: Premium data endpoint
+        mimeType:
+          type: string
+          description: Expected MIME type of the resource
+          example: application/json
+
+    PaymentOption:
+      type: object
+      description: One accepted payment method, intent, currency, and amount.
+      required:
+        - intent
+        - method
+        - currency
+        - amount
+      properties:
+        intent:
+          $ref: "#/components/schemas/Intent"
+        method:
+          type: string
+          description: Payment method identifier
+          example: card
+        currency:
+          $ref: "#/components/schemas/Currency"
+        amount:
+          type: string
+          description: Amount as a decimal string
+          example: "1.00"
+        description:
+          type: string
+          description: Human-readable description of this option
+          example: Card payment via Stripe
+        extra:
+          type: object
+          description: Method-specific extra data
+          additionalProperties: true
+
+    PaymentRequired:
+      type: object
+      description: |
+        The 402 response payload. Sent as the response body and also
+        base64-encoded in the `ACP-Payment-Required` header.
+      required:
+        - acpVersion
+        - resource
+        - accepts
+      properties:
+        acpVersion:
+          type: integer
+          description: Protocol version
+          example: 1
+        resource:
+          $ref: "#/components/schemas/Resource"
+        accepts:
+          type: array
+          description: List of accepted payment options
+          items:
+            $ref: "#/components/schemas/PaymentOption"
+        extensions:
+          type: object
+          description: Protocol extensions
+          additionalProperties: true
+
+    PaymentPayload:
+      type: object
+      description: |
+        The payment submitted by the agent. Sent as a base64-encoded JSON
+        string in the `ACP-Payment` request header.
+      required:
+        - acpVersion
+        - resource
+        - accepted
+        - payload
+      properties:
+        acpVersion:
+          type: integer
+          description: Protocol version
+          example: 1
+        resource:
+          $ref: "#/components/schemas/Resource"
+        accepted:
+          $ref: "#/components/schemas/PaymentOption"
+        payload:
+          type: object
+          description: Method-specific payment credentials
+          additionalProperties: true
+          example:
+            token: mock_tok_demo123
+        extensions:
+          type: object
+          description: Protocol extensions
+          additionalProperties: true
+
+    VerifyResponse:
+      type: object
+      description: Result of payment verification.
+      required:
+        - valid
+      properties:
+        valid:
+          type: boolean
+          description: Whether the payment is valid
+          example: true
+        reason:
+          type: string
+          description: Reason for rejection (when valid is false)
+          example: missing token
+        payer:
+          type: string
+          description: Identifier for the payer (when valid is true)
+          example: mock-payer
+
+    SettleResponse:
+      type: object
+      description: |
+        Settlement receipt. Returned from /settle and also sent as a
+        base64-encoded JSON string in the `ACP-Payment-Response` header.
+      required:
+        - acpVersion
+        - success
+        - method
+        - transaction
+        - settledAt
+      properties:
+        acpVersion:
+          type: integer
+          description: Protocol version
+          example: 1
+        success:
+          type: boolean
+          description: Whether settlement succeeded
+          example: true
+        method:
+          type: string
+          description: Payment method used
+          example: mock
+        transaction:
+          type: string
+          description: Provider transaction ID
+          example: mock_txn_1234567890
+        settledAt:
+          type: string
+          format: date-time
+          description: ISO 8601 timestamp of settlement
+          example: "2026-03-27T12:00:00Z"
+        receipt:
+          type: object
+          description: Method-specific receipt data
+          additionalProperties: true
+        extensions:
+          type: object
+          description: Protocol extensions
+          additionalProperties: true
+
+    Price:
+      type: object
+      description: A simple price declaration.
+      required:
+        - amount
+        - currency
+      properties:
+        amount:
+          type: string
+          description: Decimal amount
+          example: "1.00"
+        currency:
+          $ref: "#/components/schemas/Currency"
+
+    SupportedResponse:
+      type: object
+      description: Capabilities supported by a facilitator.
+      required:
+        - methods
+        - intents
+        - currencies
+      properties:
+        methods:
+          type: array
+          items:
+            type: string
+          description: Registered payment method names
+          example: ["mock", "card"]
+        intents:
+          type: array
+          items:
+            $ref: "#/components/schemas/Intent"
+          description: Supported intents across all methods
+        currencies:
+          type: array
+          items:
+            $ref: "#/components/schemas/Currency"
+          description: Supported currencies across all methods
+
+    Intent:
+      type: string
+      description: Payment intent type
+      enum:
+        - charge
+        - authorize
+        - subscribe
+        - mandate
+      example: charge
+
+    Currency:
+      type: string
+      description: ISO 4217 currency code
+      enum:
+        - USD
+        - EUR
+        - GBP
+        - JPY
+        - INR
+        - BRL
+        - KES
+        - NGN
+        - MXN
+        - SEK
+        - NOK
+        - SAR
+        - PHP
+        - THB
+        - IDR
+        - ZAR
+        - CNY
+      example: USD
+
+    # ── Facilitator Request ────────────────────────────────────
+    FacilitatorRequest:
+      type: object
+      description: Request body for facilitator /verify and /settle endpoints.
+      required:
+        - payload
+        - requirements
+      properties:
+        payload:
+          $ref: "#/components/schemas/PaymentPayload"
+        requirements:
+          $ref: "#/components/schemas/PaymentRequired"
+
+    # ── Dashboard Types ────────────────────────────────────────
+    Transaction:
+      type: object
+      description: A recorded payment transaction.
+      required:
+        - id
+        - method
+        - amount
+        - currency
+        - success
+        - timestamp
+      properties:
+        id:
+          type: string
+          description: Unique transaction identifier
+          example: txn_1711540800000000000
+        method:
+          type: string
+          description: Payment method used
+          example: mock
+        amount:
+          type: string
+          description: Transaction amount
+          example: "1.00"
+        currency:
+          $ref: "#/components/schemas/Currency"
+        success:
+          type: boolean
+          description: Whether the transaction succeeded
+          example: true
+        timestamp:
+          type: string
+          format: date-time
+          description: ISO 8601 timestamp
+          example: "2026-03-27T12:00:00Z"
+
+    Stats:
+      type: object
+      description: Aggregate dashboard statistics.
+      properties:
+        totalTransactions:
+          type: integer
+          description: Total number of transactions
+          example: 42
+        totalVolume:
+          type: object
+          description: Total volume per currency
+          additionalProperties:
+            type: string
+          example:
+            USD: "150.00"
+            EUR: "75.00"
+        byMethod:
+          type: object
+          description: Per-method statistics
+          additionalProperties:
+            $ref: "#/components/schemas/MethodStats"
+        successRate:
+          type: number
+          format: double
+          description: Overall success rate (0.0 to 1.0)
+          example: 0.94
+
+    MethodStats:
+      type: object
+      description: Statistics for a single payment method.
+      properties:
+        count:
+          type: integer
+          description: Number of transactions
+          example: 30
+        volume:
+          type: string
+          description: Total volume
+          example: "120.00"
+        successRate:
+          type: number
+          format: double
+          description: Success rate (0.0 to 1.0)
+          example: 0.95
+
+    MethodInfo:
+      type: object
+      description: A registered payment method and its status.
+      required:
+        - name
+        - status
+      properties:
+        name:
+          type: string
+          description: Method name
+          example: mock
+        status:
+          type: string
+          description: Operational status
+          example: active
+
+    # ── Discovery Types ────────────────────────────────────────
+    ServiceEntry:
+      type: object
+      description: A registered payment service (method provider or facilitator).
+      required:
+        - id
+        - name
+        - type
+        - url
+        - status
+      properties:
+        id:
+          type: string
+          description: Unique service identifier
+          example: demo-server
+        name:
+          type: string
+          description: Human-readable service name
+          example: ACP Demo Server
+        type:
+          type: string
+          enum:
+            - method
+            - facilitator
+          description: Whether this is a payment method or facilitator
+          example: method
+        url:
+          type: string
+          format: uri
+          description: Base URL of the service
+          example: http://localhost:8080
+        methods:
+          type: array
+          items:
+            type: string
+          description: Payment methods provided
+          example: ["mock"]
+        intents:
+          type: array
+          items:
+            $ref: "#/components/schemas/Intent"
+          description: Supported intents
+        currencies:
+          type: array
+          items:
+            $ref: "#/components/schemas/Currency"
+          description: Supported currencies
+        regions:
+          type: array
+          items:
+            type: string
+          description: Supported geographic regions
+          example: ["US", "EU", "KE"]
+        minAmount:
+          type: string
+          description: Minimum transaction amount
+          example: "0.01"
+        maxAmount:
+          type: string
+          description: Maximum transaction amount
+          example: "10000.00"
+        healthURL:
+          type: string
+          format: uri
+          description: Health check endpoint URL
+          example: http://localhost:8080/api/health
+        status:
+          type: string
+          enum:
+            - active
+            - degraded
+            - offline
+          description: Current operational status
+          example: active
+        lastChecked:
+          type: string
+          format: date-time
+          description: When health was last checked
+          example: "2026-03-27T12:00:00Z"
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+          description: Arbitrary key-value metadata
+
+    # ── Error Types ────────────────────────────────────────────
+    ErrorResponse:
+      type: object
+      description: Structured error response.
+      required:
+        - code
+        - message
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+          description: Human-readable error message
+          example: payment verification failed
+
+    ErrorCode:
+      type: string
+      description: Machine-readable error code
+      enum:
+        - insufficient_funds
+        - method_unavailable
+        - mandate_exceeded
+        - mandate_expired
+        - currency_mismatch
+        - amount_too_high
+        - verification_failed
+        - settlement_failed
+        - timeout
+        - invalid_payload
+        - unsupported_intent
+        - budget_exceeded
+      example: invalid_payload
+
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: ok
+
+  responses:
+    BadRequest:
+      description: Invalid request body or parameters
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            code: invalid_payload
+            message: "invalid request body: unexpected EOF"
+
+    UnprocessableEntity:
+      description: Valid request but payment processing failed
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            code: verification_failed
+            message: payment verification failed
+
+    InternalError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            code: method_unavailable
+            message: internal server error

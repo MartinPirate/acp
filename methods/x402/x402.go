@@ -1,11 +1,9 @@
-// Package x402 implements the x402 bridge for USDC payments on EVM chains.
 package x402
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"time"
 
 	"github.com/paideia-ai/acp/core"
@@ -16,16 +14,7 @@ type Config struct {
 	FacilitatorURL string
 	Network        string // e.g. "eip155:8453" for Base
 	PrivateKey     string // client-side signing key (hex)
-	// HTTPClient is the HTTP client used for facilitator API calls.
-	// Defaults to http.DefaultClient if nil.
-	HTTPClient *http.Client
-}
-
-func (c *Config) httpClient() *http.Client {
-	if c.HTTPClient != nil {
-		return c.HTTPClient
-	}
-	return http.DefaultClient
+	core.BaseConfig
 }
 
 // Authorization represents an EIP-3009 style transfer authorization.
@@ -80,13 +69,8 @@ func (m *X402Method) SupportedCurrencies() []core.Currency {
 }
 
 func (m *X402Method) BuildOption(intent core.Intent, price core.Price) (core.PaymentOption, error) {
-	if !core.SupportsIntent(m, intent) {
-		return core.PaymentOption{}, core.NewPaymentError(core.ErrUnsupportedIntent,
-			fmt.Sprintf("x402 does not support intent %q", intent))
-	}
-	if price.Currency != core.USDC {
-		return core.PaymentOption{}, core.NewPaymentError(core.ErrCurrencyMismatch,
-			fmt.Sprintf("x402 only supports USDC, got %q", price.Currency))
+	if err := core.ValidateBuildOption("x402", intent, price.Currency, m.SupportedIntents(), m.SupportedCurrencies()); err != nil {
+		return core.PaymentOption{}, err
 	}
 
 	extra, _ := json.Marshal(NetworkExtra{
@@ -126,8 +110,8 @@ func (m *X402Method) CreatePayload(_ context.Context, option core.PaymentOption)
 
 func (m *X402Method) Verify(_ context.Context, payment core.PaymentPayload, option core.PaymentOption) (*core.VerifyResponse, error) {
 	var p Payload
-	if err := json.Unmarshal(payment.Payload, &p); err != nil {
-		return nil, core.NewPaymentError(core.ErrInvalidPayload, "invalid x402 payload: "+err.Error())
+	if err := core.UnmarshalMethodPayload(payment.Payload, &p, "x402"); err != nil {
+		return nil, err
 	}
 	if p.Signature == "" {
 		return &core.VerifyResponse{Valid: false, Reason: "missing signature"}, nil
@@ -145,42 +129,33 @@ func (m *X402Method) Verify(_ context.Context, payment core.PaymentPayload, opti
 		return &core.VerifyResponse{Valid: false, Reason: "authorization expired"}, nil
 	}
 
-	// TODO: Forward to x402 facilitator for on-chain verification.
-	_ = m.config.httpClient()
+	// TODO: call m.config.BaseConfig.GetHTTPClient().Do(req)
 
 	return &core.VerifyResponse{Valid: true, Payer: p.Authorization.From}, nil
 }
 
 func (m *X402Method) Settle(_ context.Context, payment core.PaymentPayload, option core.PaymentOption) (*core.SettleResponse, error) {
 	var p Payload
-	if err := json.Unmarshal(payment.Payload, &p); err != nil {
-		return nil, core.NewPaymentError(core.ErrInvalidPayload, "invalid x402 payload: "+err.Error())
+	if err := core.UnmarshalMethodPayload(payment.Payload, &p, "x402"); err != nil {
+		return nil, err
 	}
 	if p.Signature == "" {
 		return nil, core.NewPaymentError(core.ErrInvalidPayload, "missing signature")
 	}
 
-	// TODO: Forward to x402 facilitator for on-chain settlement.
-	_ = m.config.httpClient()
+	// TODO: call m.config.BaseConfig.GetHTTPClient().Do(req)
 
-	txnID := fmt.Sprintf("x402_txn_%d", time.Now().UnixNano())
+	txnID := core.GenerateTxnID("x402")
 	now := time.Now()
 
-	receipt, _ := json.Marshal(map[string]string{
+	receipt := map[string]string{
 		"network":   m.config.Network,
 		"txHash":    fmt.Sprintf("0xtx_%d", now.UnixNano()),
 		"from":      p.Authorization.From,
 		"to":        p.Authorization.To,
 		"value":     p.Authorization.Value,
 		"signature": p.Signature,
-	})
+	}
 
-	return &core.SettleResponse{
-		ACPVersion:  core.ACPVersion,
-		Success:     true,
-		Method:      "x402",
-		Transaction: txnID,
-		SettledAt:   now.Format(time.RFC3339),
-		Receipt:     receipt,
-	}, nil
+	return core.BuildSettleResponse("x402", txnID, receipt)
 }

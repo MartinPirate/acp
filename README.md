@@ -6,6 +6,54 @@ ACP is a Go-based protocol and middleware layer that bridges AI agents with the 
 
 > Think of it as "the HTTP of payments" — a single protocol that agents speak, with pluggable backends for every payment rail on earth.
 
+[![Go](https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat&logo=go)](https://go.dev)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![Tests](https://img.shields.io/badge/Tests-227%20passing-brightgreen.svg)](#testing)
+
+---
+
+## Quick Start
+
+### Install
+
+```bash
+go get github.com/paideia-ai/acp
+```
+
+### Server — Paywall an endpoint in 3 lines
+
+```go
+gateway := acp.NewGateway(acp.WithMethod(mock.New(mock.Config{})))
+
+mux.Handle("/api/data", acphttp.Paywall(gateway, acp.Price{
+    Amount: "1.00", Currency: "USD",
+}, handler))
+```
+
+### Client — Agent pays automatically
+
+```go
+client := acphttp.NewClient(gateway)
+resp, err := client.Get("https://api.example.com/api/data")
+// 402 is handled automatically — resp is 200 with your data
+```
+
+### Try it now
+
+```bash
+# Terminal 1: start the demo server
+go run ./examples/demo
+
+# Terminal 2: pay for an API call
+go run ./cmd/acp-pay --url http://localhost:8080/api/data
+
+# See the 402 response directly
+curl -i http://localhost:8080/api/data
+
+# Open the dashboard
+open http://localhost:9090
+```
+
 ---
 
 ## Why ACP Exists
@@ -27,7 +75,6 @@ Meanwhile, the world pays with:
 - **SEPA Instant** — covering 36 European countries
 - **FedNow** — real-time payments in the US
 - **Alipay/WeChat Pay** — dominant in China
-- **GrabPay, GCash, PromptPay** — across Southeast Asia
 
 **No existing agent payment protocol supports any of these rails.** ACP fills this gap.
 
@@ -35,9 +82,7 @@ Meanwhile, the world pays with:
 
 ## How It Works
 
-ACP uses the HTTP 402 status code to create a universal payment negotiation layer between agents and services.
-
-### The Flow
+ACP uses the HTTP 402 status code to create a universal payment negotiation layer between agents and services. Two requests, three headers — that's the entire protocol.
 
 ```
 Agent                        Service                      Facilitator
@@ -45,101 +90,73 @@ Agent                        Service                      Facilitator
   |-- GET /api/resource ------->|                              |
   |                             |                              |
   |<-- 402 Payment Required ----|                              |
-  |    (accepted methods,       |                              |
-  |     amount, currency)       |                              |
+  |    ACP-Payment-Required:    |                              |
+  |    (methods, amounts)       |                              |
   |                             |                              |
-  |-- Select payment method --->|                              |
-  |   (e.g. UPI, PIX, card)    |                              |
-  |                             |                              |
-  |-- POST payment to ---------|------- /verify -------------->|
-  |   facilitator              |                              |
-  |                             |<------ verified -------------|
-  |                             |                              |
+  |-- GET /api/resource ------->|                              |
+  |   ACP-Payment: (proof)     |------- /verify -------------->|
+  |                             |<------ valid ----------------|
   |                             |------- /settle ------------->|
-  |                             |   (executes on chosen rail)  |
   |                             |<------ settled --------------|
   |                             |                              |
   |<-- 200 OK + resource -------|                              |
+  |   ACP-Payment-Response:     |                              |
+  |   (receipt)                 |                              |
 ```
 
-### HTTP Headers
+### What goes over the wire
 
-| Header | Direction | Purpose |
-|---|---|---|
-| `ACP-Payment-Required` | Server -> Agent | Payment options (methods, amount, currency) |
-| `ACP-Payment` | Agent -> Server | Selected method + payment proof/authorization |
-| `ACP-Payment-Response` | Server -> Agent | Settlement confirmation + receipt |
-
-### Example: Agent Pays for an API Call
-
-**Step 1: Agent requests a resource**
+**Request 1** — Agent sends a normal HTTP request:
 ```http
-GET /api/v1/market-data HTTP/1.1
+GET /api/data HTTP/1.1
 Host: api.example.com
 ```
 
-**Step 2: Server responds with payment options**
+**Response 1** — Server responds 402 with payment options:
 ```http
 HTTP/1.1 402 Payment Required
 ACP-Payment-Required: <base64-encoded JSON>
-Content-Type: application/json
-
+```
+```json
 {
   "acpVersion": 1,
-  "resource": {
-    "url": "https://api.example.com/api/v1/market-data",
-    "description": "Real-time market data feed",
-    "mimeType": "application/json"
-  },
+  "resource": { "url": "/api/data" },
   "accepts": [
-    {
-      "intent": "charge",
-      "method": "upi",
-      "currency": "INR",
-      "amount": "500",
-      "description": "UPI instant payment"
-    },
-    {
-      "intent": "charge",
-      "method": "card",
-      "currency": "USD",
-      "amount": "5.99",
-      "description": "Card payment via Stripe"
-    },
-    {
-      "intent": "charge",
-      "method": "x402",
-      "currency": "USDC",
-      "amount": "5990000",
-      "network": "eip155:8453",
-      "description": "USDC on Base"
-    },
-    {
-      "intent": "charge",
-      "method": "mpesa",
-      "currency": "KES",
-      "amount": "770",
-      "description": "M-Pesa STK Push"
-    }
+    { "intent": "charge", "method": "card",  "currency": "USD", "amount": "5.99" },
+    { "intent": "charge", "method": "upi",   "currency": "INR", "amount": "500" },
+    { "intent": "charge", "method": "mpesa", "currency": "KES", "amount": "770" },
+    { "intent": "charge", "method": "pix",   "currency": "BRL", "amount": "30.00" },
+    { "intent": "charge", "method": "x402",  "currency": "USDC", "amount": "5990000" }
   ]
 }
 ```
 
-**Step 3: Agent selects a method and pays**
+**Request 2** — Agent picks a method and retries with payment proof:
 ```http
-GET /api/v1/market-data HTTP/1.1
-Host: api.example.com
+GET /api/data HTTP/1.1
 ACP-Payment: <base64-encoded PaymentPayload>
 ```
 
-**Step 4: Server validates and returns the resource**
+**Response 2** — Server verifies, settles, and returns the resource:
 ```http
 HTTP/1.1 200 OK
 ACP-Payment-Response: <base64-encoded receipt>
-Content-Type: application/json
 
-{ "data": { ... } }
+{ "data": "your premium content" }
 ```
+
+The `ACP-Payment` payload is **method-specific** — each rail puts different data in it:
+
+| Method | Payload contains |
+|---|---|
+| `card` | `token`, `paymentIntentId` |
+| `upi` | `vpa`, `transactionRef`, `upiTransactionId` |
+| `mpesa` | `phoneNumber`, `checkoutRequestId`, `transactionId` |
+| `pix` | `pixKey`, `e2eID`, `txID` |
+| `x402` | `signature`, `authorization` (EIP-3009) |
+| `sepa` | `iban`, `bic`, `reference`, `endToEndID` |
+| `openbanking` | `consentID`, `paymentID`, `provider` |
+| `alipay` | `tradeNo`, `outTradeNo`, `buyerID` |
 
 ---
 
@@ -173,14 +190,11 @@ ACP separates **what** kind of payment (Intents) from **how** it's executed (Met
      │               │ │ Cards/Stripe │  │                 │
      │               │ │ x402/Crypto  │  │                 │
      │               │ │ Alipay       │  │                 │
-     │               │ │ FedNow       │  │                 │
      │               │ │ Open Banking │  │                 │
      └───────────────┘ └──────────────┘  └─────────────────┘
 ```
 
-### Core Concepts
-
-#### Intents
+### Intents
 
 An Intent describes **what kind of payment** the service wants. Intents are independent of payment rails.
 
@@ -191,68 +205,50 @@ An Intent describes **what kind of payment** the service wants. Intents are inde
 | `subscribe` | Recurring payment | Ongoing API access |
 | `mandate` | Delegated spending authority | Autonomous agent budgets |
 
-#### Methods
+### Methods
 
 A Method is a **concrete payment rail implementation**. Each method knows how to create payment payloads, verify them, and settle on its specific rail.
 
-| Method | Rail | Region | Settlement |
-|---|---|---|---|
-| `card` | Visa/Mastercard/Amex | Global | 1-3 days |
-| `upi` | Unified Payments Interface | India | Instant |
-| `pix` | PIX | Brazil | Instant |
-| `mpesa` | M-Pesa (Daraja API) | East Africa | Instant |
-| `sepa` | SEPA Instant/Credit Transfer | Europe | Instant - 1 day |
-| `fednow` | FedNow | US | Instant |
-| `x402` | x402 (EVM/Solana USDC) | Global | ~seconds (on-chain) |
-| `alipay` | Alipay | China | Instant |
-| `gcash` | GCash | Philippines | Instant |
-| `grabpay` | GrabPay | Southeast Asia | Instant |
-| `openbanking` | PSD2/Open Banking APIs | Europe/UK | Instant - 1 day |
+| Method | Rail | Region | Settlement | Currency |
+|---|---|---|---|---|
+| `card` | Visa/Mastercard/Amex | Global | 1-3 days | USD, EUR, GBP, +12 more |
+| `upi` | Unified Payments Interface | India | Instant | INR |
+| `pix` | PIX | Brazil | Instant | BRL |
+| `mpesa` | M-Pesa (Daraja API) | East Africa | Instant | KES |
+| `sepa` | SEPA Instant/Credit Transfer | Europe | Instant - 1 day | EUR |
+| `x402` | x402 (EVM USDC) | Global | ~seconds | USDC |
+| `alipay` | Alipay | China | Instant | CNY |
+| `openbanking` | PSD2/Open Banking | Europe/UK | Instant - 1 day | EUR, GBP |
+| `mock` | Testing only | Global | Instant | All |
 
-New methods can be added without modifying the core protocol.
+New methods can be added without modifying the core protocol — just implement the `core.Method` interface.
 
-#### Facilitators
+### Facilitators
 
-A Facilitator is a service that **verifies and settles payments** on behalf of the resource server. Facilitators abstract away the complexity of individual payment rails.
+A Facilitator is a service that **verifies and settles payments** on behalf of the resource server:
 
 ```go
 type Facilitator interface {
-    // Verify checks if a payment payload is valid without settling
-    Verify(ctx context.Context, payload PaymentPayload, requirements PaymentRequirements) (*VerifyResponse, error)
-
-    // Settle executes the payment on the chosen rail
-    Settle(ctx context.Context, payload PaymentPayload, requirements PaymentRequirements) (*SettleResponse, error)
-
-    // Supported returns which methods/intents this facilitator handles
+    Verify(ctx context.Context, payload PaymentPayload, requirements PaymentRequired) (*VerifyResponse, error)
+    Settle(ctx context.Context, payload PaymentPayload, requirements PaymentRequired) (*SettleResponse, error)
     Supported(ctx context.Context) (*SupportedResponse, error)
 }
 ```
 
-Facilitators can be:
-- **Self-hosted** — you run your own, connected directly to payment provider APIs
-- **Third-party hosted** — use a managed facilitator service
-- **Bridged** — wrap existing x402 facilitators for crypto, adding fiat methods alongside
-
 ### Transport Bindings
 
-ACP is transport-agnostic at its core. The protocol defines how payment negotiation works; transport bindings define how it's carried over different communication channels.
+ACP is transport-agnostic. The protocol defines payment negotiation; transport bindings carry it over different channels.
 
-| Transport | Mechanism | Status |
+| Transport | Mechanism | Package |
 |---|---|---|
-| **HTTP** | 402 status + headers | Primary |
-| **MCP** | Tool result metadata | Planned |
-| **A2A** | Task metadata | Planned |
-| **gRPC** | Metadata/trailers | Planned |
+| **HTTP** | 402 status + headers | `transport/acphttp` |
+| **MCP** | Tool result `_meta` | `transport/acpmcp` |
+| **A2A** | Task metadata | `transport/acpa2a` |
+| **gRPC** | Metadata + interceptors | `transport/acpgrpc` |
 
 ---
 
 ## Go SDK
-
-### Installation
-
-```bash
-go get github.com/paideia-ai/acp
-```
 
 ### Server-Side: Protect an Endpoint
 
@@ -261,6 +257,7 @@ package main
 
 import (
     "net/http"
+    "os"
 
     "github.com/paideia-ai/acp"
     "github.com/paideia-ai/acp/methods/card"
@@ -270,77 +267,55 @@ import (
 )
 
 func main() {
-    // Create a payment gateway with multiple methods
     gateway := acp.NewGateway(
         acp.WithMethod(card.New(card.Config{
-            Provider: "stripe",
-            APIKey:   os.Getenv("STRIPE_SECRET_KEY"),
+            APIKey:        os.Getenv("STRIPE_SECRET_KEY"),
+            WebhookSecret: os.Getenv("STRIPE_WEBHOOK_SECRET"),
         })),
         acp.WithMethod(upi.New(upi.Config{
-            Provider: "razorpay",
-            APIKey:   os.Getenv("RAZORPAY_KEY"),
+            APIKey:      os.Getenv("RAZORPAY_KEY"),
+            APISecret:   os.Getenv("RAZORPAY_SECRET"),
+            MerchantVPA: "merchant@upi",
         })),
         acp.WithMethod(mpesa.New(mpesa.Config{
             ConsumerKey:    os.Getenv("MPESA_CONSUMER_KEY"),
             ConsumerSecret: os.Getenv("MPESA_CONSUMER_SECRET"),
             ShortCode:      os.Getenv("MPESA_SHORTCODE"),
+            PassKey:        os.Getenv("MPESA_PASSKEY"),
+            Environment:    "sandbox",
         })),
     )
 
     mux := http.NewServeMux()
-
-    // Protect endpoints with payment requirements
-    mux.Handle("/api/v1/market-data", acphttp.Paywall(gateway, acp.Price{
-        Amount:   "5.99",
-        Currency: "USD",
-    }, http.HandlerFunc(marketDataHandler)))
+    mux.Handle("/api/data", acphttp.Paywall(gateway, acp.Price{
+        Amount: "5.99", Currency: "USD",
+    }, http.HandlerFunc(dataHandler)))
 
     http.ListenAndServe(":8080", mux)
 }
 ```
 
-### Client-Side: Agent Makes a Payment
+### Client-Side: Agent Pays Automatically
 
 ```go
-package main
-
-import (
-    "fmt"
-    "io"
-
-    "github.com/paideia-ai/acp"
-    "github.com/paideia-ai/acp/methods/card"
-    "github.com/paideia-ai/acp/transport/acphttp"
+gateway := acp.NewGateway(
+    acp.WithMethod(card.New(card.Config{
+        APIKey:        os.Getenv("STRIPE_SECRET_KEY"),
+        WebhookSecret: os.Getenv("STRIPE_WEBHOOK_SECRET"),
+    })),
 )
 
-func main() {
-    // Create a client with available payment methods
-    client := acphttp.NewClient(
-        acp.WithMethod(card.New(card.Config{
-            Provider: "stripe",
-            Token:    os.Getenv("STRIPE_PAYMENT_TOKEN"),
-        })),
-        // Client can also set budget limits
-        acp.WithBudget(acp.Budget{
-            MaxPerRequest: "10.00",
-            MaxPerSession: "100.00",
-            Currency:      "USD",
-        }),
-    )
+client := acphttp.NewClient(gateway, acphttp.WithBudget(core.Budget{
+    MaxPerRequest: "10.00",
+    MaxPerSession: "100.00",
+    Currency:      "USD",
+}))
 
-    // Agent makes a request — payment is handled automatically
-    resp, err := client.Get("https://api.example.com/api/v1/market-data")
-    if err != nil {
-        panic(err)
-    }
-    defer resp.Body.Close()
-
-    body, _ := io.ReadAll(resp.Body)
-    fmt.Println(string(body))
-}
+resp, err := client.Get("https://api.example.com/api/data")
+// Agent receives 402, selects a method, pays, and gets the 200 — all automatic
 ```
 
-### Middleware: Framework Support
+### Framework Middleware
 
 ```go
 // net/http (stdlib)
@@ -353,125 +328,172 @@ r.With(acpchi.Paywall(gateway, price)).Get("/paid", handler)
 r.GET("/paid", acpgin.Paywall(gateway, price), handler)
 
 // Echo
-r.GET("/paid", handler, acpecho.Paywall(gateway, price))
+e.GET("/paid", handler, acpecho.Paywall(gateway, price))
 ```
 
 ### Mandates: Pre-Authorized Agent Spending
 
-For autonomous agents that need to spend without human confirmation per transaction:
-
 ```go
-// Create a mandate (human approves once)
-mandate := acp.Mandate{
-    AgentID:       "agent-xyz-123",
-    MaxAmount:     "500.00",
-    Currency:      "USD",
-    MaxPerRequest: "50.00",
-    ExpiresAt:     time.Now().Add(24 * time.Hour),
-    AllowedMethods: []string{"card", "upi"},
-    Scope:         []string{"api.example.com/*"},
-}
-
-// Agent uses the mandate for subsequent payments
-client := acphttp.NewClient(
-    acp.WithMandate(mandate),
+m := mandate.NewMandate(
+    mandate.WithAgentID("agent-xyz"),
+    mandate.WithMaxAmount("500.00"),
+    mandate.WithCurrency(core.USD),
+    mandate.WithMaxPerRequest("50.00"),
+    mandate.WithAllowedMethods("card", "upi"),
+    mandate.WithScope("/api/*"),
+    mandate.WithExpiry(time.Now().Add(24 * time.Hour)),
 )
 
-// Payments within mandate limits proceed without human intervention
-resp, _ := client.Get("https://api.example.com/api/v1/resource")
+store := mandate.NewMemoryStore()
+store.Save(m)
+
+enforcer := mandate.NewEnforcer()
+err := enforcer.Check(m, payload, "/api/data")
 ```
+
+### Audit Trail
+
+```go
+auditLogger := audit.NewMemoryLogger()
+auditedGW := audit.NewAuditedGateway(gateway, auditLogger)
+// Use auditedGW instead of gateway — all verify/settle calls are logged
+```
+
+### Rate Limiting & Anomaly Detection
+
+```go
+limiter := ratelimit.NewTokenBucketLimiter(ratelimit.TokenBucketConfig{
+    Rate: 10, Burst: 20,
+})
+
+detector := ratelimit.NewAnomalyDetector()
+result := detector.Check("agent-id", "100.00", core.USD, "card")
+// result.IsAnomaly, result.RiskScore, result.Reasons
+```
+
+### Payment Orchestration
+
+```go
+// Automatically select the cheapest payment rail
+orch := orchestration.NewOrchestrator(&orchestration.CheapestStrategy{
+    FeeTable: orchestration.NewFeeTable(map[string]orchestration.FeeInfo{
+        "card":  {FixedFee: "0.30", PercentFee: 0.029, Currency: core.USD},
+        "upi":   {FixedFee: "0.00", PercentFee: 0.005, Currency: core.INR},
+        "mpesa": {FixedFee: "0.00", PercentFee: 0.01, Currency: core.KES},
+    }),
+})
+```
+
+### Agent Authentication (JWT)
+
+```go
+issuer := auth.NewTokenIssuer(signingKey, "my-app", "my-app")
+token, _ := issuer.Issue("agent-id", "user-id", []auth.Permission{
+    {Resource: "/api/*", Methods: []string{"card"}, MaxAmount: "100.00", Currency: "USD"},
+}, 24 * time.Hour)
+
+// Middleware validates tokens on incoming requests
+validator := auth.NewJWTValidator(auth.JWTConfig{
+    SigningKey: signingKey, Issuer: "my-app", Audience: "my-app",
+})
+mux.Handle("/api/", auth.AuthMiddleware(validator)(apiHandler))
+```
+
+---
+
+## API Documentation
+
+ACP ships with an embedded OpenAPI 3.1 specification and Swagger UI.
+
+### Facilitator API
+
+Start the reference facilitator and browse the docs:
+
+```bash
+go run ./cmd/acp-facilitator
+open http://localhost:8181/api/docs/
+```
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `POST /verify` | Verify a payment without executing | Returns `{ valid, reason, payer }` |
+| `POST /settle` | Execute payment on the rail | Returns `SettleResponse` |
+| `GET /supported` | Declare capabilities | Returns supported methods, intents, currencies |
+| `GET /health` | Health check | Returns `{ status: "ok" }` |
+| `GET /api/docs/` | Swagger UI | Interactive API documentation |
+| `GET /api/openapi.yaml` | OpenAPI spec | Raw YAML specification |
+
+### Dashboard API
+
+```bash
+go run ./examples/demo
+open http://localhost:9090        # Dashboard UI
+open http://localhost:9090/docs/  # Swagger UI
+```
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /` | Dashboard HTML page |
+| `GET /api/stats` | Aggregate statistics (volume, success rate, by method) |
+| `GET /api/transactions` | Transaction list with pagination (`?limit=&offset=`) |
+| `GET /api/methods` | Registered methods and status |
+| `GET /api/health` | Health check |
+
+### Service Discovery
+
+```bash
+curl http://localhost:8080/.well-known/acp-services
+```
+
+Returns all active payment services registered in the discovery registry.
 
 ---
 
 ## Protocol Specification
 
-### Version
+The full formal specification is at [`spec/acp-spec-v1.md`](spec/acp-spec-v1.md) (IETF-style).
 
-Current protocol version: **1** (`acpVersion: 1`)
+### Wire Format Summary
 
-### PaymentRequired
-
-Returned in the `ACP-Payment-Required` header (base64-encoded) with a 402 response.
-
+**PaymentRequired** (402 response, `ACP-Payment-Required` header):
 ```json
 {
   "acpVersion": 1,
-  "resource": {
-    "url": "string — the requested resource URL",
-    "description": "string — human/agent-readable description",
-    "mimeType": "string — expected response content type"
-  },
-  "accepts": [
-    {
-      "intent": "charge | authorize | subscribe | mandate",
-      "method": "string — payment method identifier",
-      "currency": "string — ISO 4217 currency code or token symbol",
-      "amount": "string — amount in smallest currency unit or decimal",
-      "description": "string — human/agent-readable description",
-      "extra": {}
-    }
-  ],
+  "resource": { "url": "string", "description": "string", "mimeType": "string" },
+  "accepts": [{ "intent": "charge", "method": "string", "currency": "string", "amount": "string" }],
   "extensions": {}
 }
 ```
 
-### PaymentPayload
-
-Sent in the `ACP-Payment` header (base64-encoded) with the retried request.
-
+**PaymentPayload** (retry request, `ACP-Payment` header):
 ```json
 {
   "acpVersion": 1,
-  "resource": {
-    "url": "string",
-    "description": "string",
-    "mimeType": "string"
-  },
-  "accepted": {
-    "intent": "string",
-    "method": "string",
-    "currency": "string",
-    "amount": "string"
-  },
-  "payload": {},
+  "resource": { "url": "string" },
+  "accepted": { "intent": "string", "method": "string", "currency": "string", "amount": "string" },
+  "payload": { },
   "extensions": {}
 }
 ```
 
-The `payload` field is method-specific. Each payment method defines its own payload structure (e.g., a card method includes a payment token, UPI includes a VPA and transaction reference, etc.).
-
-### SettleResponse
-
-Returned in the `ACP-Payment-Response` header (base64-encoded) with the 200 response.
-
+**SettleResponse** (200 response, `ACP-Payment-Response` header):
 ```json
 {
   "acpVersion": 1,
   "success": true,
-  "method": "string — method used for settlement",
-  "transaction": "string — provider-specific transaction ID",
-  "settledAt": "string — ISO 8601 timestamp",
-  "receipt": {},
-  "extensions": {}
+  "method": "string",
+  "transaction": "string",
+  "settledAt": "2026-03-27T18:28:06Z",
+  "receipt": { }
 }
 ```
-
-### Facilitator API
-
-Facilitators expose three endpoints:
-
-| Endpoint | Method | Purpose |
-|---|---|---|
-| `POST /verify` | Verify payment without executing | Returns `{ valid, reason, payer }` |
-| `POST /settle` | Execute payment on the rail | Returns `SettleResponse` |
-| `GET /supported` | Declare capabilities | Returns supported intents, methods, currencies |
 
 ### Error Codes
 
 | Code | Meaning |
 |---|---|
 | `insufficient_funds` | Payer cannot cover the amount |
-| `method_unavailable` | Requested method not supported by facilitator |
+| `method_unavailable` | Method not supported by facilitator |
 | `mandate_exceeded` | Payment exceeds mandate limits |
 | `mandate_expired` | Mandate has expired |
 | `currency_mismatch` | Currency not supported for this method |
@@ -479,51 +501,70 @@ Facilitators expose three endpoints:
 | `verification_failed` | Payment proof could not be verified |
 | `settlement_failed` | Payment execution failed on the rail |
 | `timeout` | Payment or settlement timed out |
+| `invalid_payload` | Malformed payment payload |
+| `unsupported_intent` | Method does not support this intent |
+| `budget_exceeded` | Client budget limit reached |
 
 ---
 
-## Interoperability
+## Testing
 
-ACP is designed to work alongside existing protocols, not replace them.
+227 tests across 27 packages, all passing.
 
-### x402 Bridge
+```bash
+# Run all tests
+go test ./...
 
-ACP can act as an x402-compatible facilitator, translating between x402's crypto-only protocol and ACP's multi-rail approach:
+# Run with verbose output
+go test ./... -v
 
-```go
-// Bridge x402 requests through ACP
-gateway := acp.NewGateway(
-    acp.WithMethod(x402.Bridge(x402.Config{
-        FacilitatorURL: "https://x402-facilitator.example.com",
-    })),
-    acp.WithMethod(card.New(/* ... */)),
-    acp.WithMethod(pix.New(/* ... */)),
-)
+# Run specific package tests
+go test ./methods/card/ -v
+go test ./transport/acphttp/ -v
+go test ./core/ -v
 ```
 
-An agent speaking x402 hits an ACP-enabled server and gets back x402-compatible responses. An agent speaking ACP gets the full set of payment options.
+### End-to-End Demo
 
-### MPP Compatibility
+The demo wires up all subsystems: gateway, audit, rate limiting, anomaly detection, mandates, discovery, orchestration, dashboard, and JWT auth.
 
-ACP's Intent model aligns with MPP's intent types. An adapter can translate between the two:
-
-```go
-gateway := acp.NewGateway(
-    acp.WithMethod(mpp.Bridge(mpp.Config{
-        StripeKey: os.Getenv("STRIPE_SECRET_KEY"),
-    })),
-)
+```bash
+go run ./examples/demo
 ```
 
-### AP2 Mandate Support
+Then in another terminal:
 
-ACP mandates can incorporate AP2's Verifiable Digital Credentials for enterprise-grade authorization:
+```bash
+# Free endpoint
+curl http://localhost:8080/api/health
 
-```go
-mandate := acp.Mandate{
-    // ...
-    Credential: ap2.VerifiableCredential{/* ... */},
-}
+# See 402 response
+curl -i http://localhost:8080/api/data
+
+# Auto-pay $1.00
+go run ./cmd/acp-pay --url http://localhost:8080/api/data
+
+# Auto-pay $9.99
+go run ./cmd/acp-pay --url http://localhost:8080/api/premium
+
+# Multi-currency (EUR)
+go run ./cmd/acp-pay --url http://localhost:8080/api/eu-data --currency EUR
+
+# Budget enforcement (fails — $9.99 exceeds $5.00 cap)
+go run ./cmd/acp-pay --url http://localhost:8080/api/premium --max-spend 5.00
+
+# Dashboard stats
+curl http://localhost:9090/api/stats
+
+# Service discovery
+curl http://localhost:8080/.well-known/acp-services
+```
+
+### Docker
+
+```bash
+docker build -t acp-facilitator .
+docker run -p 8181:8181 acp-facilitator
 ```
 
 ---
@@ -535,56 +576,12 @@ mandate := acp.Mandate{
 | **Payment rails** | Any (cards, mobile money, A2A, crypto) | Crypto only (USDC) | Stripe + Tempo | Cards/bank |
 | **Fiat support** | Native | No | Via Stripe | Yes |
 | **Mobile money** | Native (M-Pesa, GCash, etc.) | No | No | No |
-| **Real-time payments** | Native (UPI, PIX, FedNow) | No | No | No |
+| **Real-time payments** | Native (UPI, PIX) | No | No | No |
 | **Open banking** | Native (PSD2, A2A) | No | No | No |
 | **Crypto** | Via x402 bridge | Native | Via Tempo | No |
-| **Agent autonomy** | Full (mandates) | Full | Full (sessions) | Partial (mandates) |
-| **Human-present** | Supported | Not designed for | Not designed for | Primary focus |
-| **Open source** | Yes (Apache 2.0) | Yes (Apache 2.0) | Spec open, SDK proprietary | Spec open |
+| **Agent autonomy** | Full (mandates + budgets) | Full | Full (sessions) | Partial |
+| **Open source** | Yes (Apache 2.0) | Yes (Apache 2.0) | Spec open | Spec open |
 | **Transport** | HTTP, MCP, A2A, gRPC | HTTP, MCP, A2A | HTTP | A2A, MCP |
-| **Language** | Go | TypeScript, Go, Python | TypeScript | N/A (spec only) |
-
----
-
-## Roadmap
-
-### Phase 1: Core Protocol & HTTP Transport
-- [x]Core types and interfaces (Intents, Methods, Facilitator)
-- [x]HTTP transport binding (402 negotiation, headers)
-- [x]Method: Cards via Stripe
-- [x]Method: x402 bridge (USDC on EVM)
-- [x]net/http, Chi, Gin, Echo middleware
-- [x]CLI tool (`acp-pay`) for testing
-- [x]Facilitator reference implementation
-
-### Phase 2: Global Payment Rails
-- [x]Method: UPI (via Razorpay / Cashfree)
-- [x]Method: PIX (via Stripe Brazil / PagSeguro)
-- [x]Method: M-Pesa (via Daraja / Tingg)
-- [x]Method: SEPA Instant (via Stripe / Adyen)
-- [x]Method: Open Banking (via TrueLayer / Plaid)
-- [x]Method: Alipay (via Alipay global)
-- [x]Multi-currency support with FX routing
-
-### Phase 3: Agent Autonomy
-- [x]Mandate specification and enforcement
-- [x]Budget management and spending limits
-- [x]OAuth 2.0 agent token flow (IETF draft-oauth-ai-agents)
-- [x]Audit trail and receipt storage
-- [x]Rate limiting and anomaly detection
-
-### Phase 4: Advanced Transport & Discovery
-- [x]MCP transport binding
-- [x]A2A transport binding
-- [x]gRPC transport binding
-- [x]Service discovery / method registry
-- [x]Payment orchestration (smart rail selection)
-
-### Phase 5: Ecosystem
-- [x]Hosted facilitator service
-- [x]Dashboard for monitoring agent payments
-- [x]SDKs: Python, TypeScript, Java, Rust
-- [x]Formal specification (IETF draft)
 
 ---
 
@@ -592,56 +589,78 @@ mandate := acp.Mandate{
 
 ```
 acp/
-  core/                     # Protocol types, interfaces, errors
-    intent.go               # Charge, Authorize, Subscribe, Mandate
-    method.go               # Method interface
-    facilitator.go          # Facilitator interface
-    types.go                # PaymentRequired, PaymentPayload, SettleResponse
-    errors.go               # Typed error codes
-    currency.go             # ISO 4217 + crypto token handling
+  core/                       # Protocol types, interfaces, errors, utilities
+    types.go                  # PaymentRequired, PaymentPayload, SettleResponse
+    method.go                 # Method interface
+    gateway.go                # GatewayInterface (shared by audit/ratelimit wrappers)
+    facilitator.go            # Facilitator interface
+    intent.go                 # Charge, Authorize, Subscribe, Mandate
+    currency.go               # ISO 4217 + crypto token handling
+    errors.go                 # Typed error codes
+    budget.go                 # Budget enforcement
+    methodutil.go             # Shared utilities (payload, settle, validation)
+    slices.go                 # Shared slice helpers
+    idempotency.go            # Idempotency key generation
 
-  methods/                  # Payment rail implementations
-    card/                   # Visa/Mastercard via Stripe, Adyen, etc.
-    upi/                    # UPI via Razorpay, Cashfree
-    pix/                    # PIX via Stripe Brazil, PagSeguro
-    mpesa/                  # M-Pesa via Daraja, Tingg
-    sepa/                   # SEPA via Stripe, Adyen
-    x402/                   # x402 bridge (EVM/Solana USDC)
-    openbanking/            # PSD2/Open Banking via TrueLayer
+  methods/                    # Payment rail implementations
+    card/                     # Visa/Mastercard via Stripe
+    upi/                      # UPI via Razorpay (India)
+    pix/                      # PIX (Brazil)
+    mpesa/                    # M-Pesa via Daraja (Kenya)
+    sepa/                     # SEPA Instant (Europe)
+    x402/                     # x402 USDC bridge (EVM)
+    alipay/                   # Alipay (China)
+    openbanking/              # Open Banking / PSD2 (UK/EU)
+    fx/                       # FX rate conversion utility
+    mock/                     # Mock method for testing
 
-  transport/                # Transport bindings
-    acphttp/                # HTTP 402 middleware
-    acpmcp/                 # MCP tool payment handler
-    acpa2a/                 # A2A task payment metadata
-    acpgrpc/                # gRPC interceptor
+  transport/                  # Transport bindings
+    acphttp/                  # HTTP 402 middleware + auto-paying client
+    acpmcp/                   # MCP tool payment handler
+    acpa2a/                   # A2A task payment metadata
+    acpgrpc/                  # gRPC interceptors
 
-  middleware/               # Framework-specific adapters
-    acpchi/                 # Chi middleware
-    acpgin/                 # Gin middleware
-    acpecho/                # Echo middleware
+  middleware/                 # Framework-specific adapters
+    acpchi/                   # Chi middleware
+    acpgin/                   # Gin middleware
+    acpecho/                  # Echo middleware
 
-  facilitator/              # Reference facilitator server
-    server.go               # HTTP server with /verify, /settle, /supported
-    store.go                # Transaction/receipt storage
+  mandate/                    # Mandate specification and enforcement
+  audit/                      # Audit trail and receipt logging
+  auth/                       # OAuth 2.0 JWT agent tokens
+  ratelimit/                  # Rate limiting + anomaly detection
+  discovery/                  # Service discovery + health checking
+  orchestration/              # Smart payment rail selection (6 strategies)
+  dashboard/                  # Web monitoring dashboard + REST API
 
-  mandate/                  # Mandate management
-    mandate.go              # Mandate types and validation
-    enforcer.go             # Spending limit enforcement
+  api/                        # OpenAPI spec + Swagger UI
+    openapi.yaml              # OpenAPI 3.1 specification
+    swagger-ui/               # Embedded Swagger UI
+
+  spec/                       # Formal protocol specification
+    acp-spec-v1.md            # IETF-style protocol spec
 
   cmd/
-    acp-pay/                # CLI tool for testing payments
-    acp-facilitator/        # Reference facilitator binary
+    acp-pay/                  # CLI tool for testing payments
+    acp-facilitator/          # Reference facilitator server
+
+  examples/
+    server/                   # Simple example server
+    demo/                     # Full-stack demo (all subsystems)
+
+  Dockerfile                  # Multi-stage build for facilitator
+  docker-compose.yml          # Facilitator + optional Redis
 ```
 
 ---
 
 ## Design Principles
 
-1. **Rail-agnostic** — The protocol never assumes a specific payment rail. New rails are added as Method implementations without protocol changes.
+1. **Rail-agnostic** — The protocol never assumes a specific payment rail. New rails are added as `Method` implementations without protocol changes.
 
 2. **Intent over implementation** — Services declare what they need (a charge of $5), not how to get it (a Stripe PaymentIntent). The agent and facilitator negotiate the how.
 
-3. **Progressive complexity** — One line to paywall an endpoint. More configuration available when you need mandates, multi-currency, or custom settlement.
+3. **Progressive complexity** — One line to paywall an endpoint. Add mandates, budgets, orchestration, audit, and auth when you need them.
 
 4. **Interoperable** — Bridges to x402, MPP, and AP2 so ACP works within the existing ecosystem, not against it.
 
@@ -655,15 +674,13 @@ acp/
 
 ## Contributing
 
-ACP is in its early stages. We're looking for contributors, especially those with experience in:
+We're looking for contributors, especially those with experience in:
 
 - Payment provider integrations (Stripe, Razorpay, Daraja, PagSeguro, Adyen, etc.)
 - Protocol design and specification writing
 - Go middleware and SDK development
 - AI agent frameworks (LangChain, AutoGen, CrewAI, etc.)
 - MCP and A2A protocol implementations
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ---
 
